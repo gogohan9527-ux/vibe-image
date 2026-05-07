@@ -108,12 +108,23 @@ vibe-image/
 
 ### 8.1 准备配置
 
+Windows PowerShell 环境：
+
 ```powershell
 Copy-Item config/config.example.yaml config/config.yaml
 # 编辑 config/config.yaml，填入 api_key
 ```
 
+macOS / Linux shell 环境：
+
+```sh
+cp config/config.example.yaml config/config.yaml
+# 编辑 config/config.yaml，填入 api_key
+```
+
 ### 8.2 启动后端
+
+Windows PowerShell 环境：
 
 ```powershell
 cd backend
@@ -123,9 +134,19 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+macOS / Linux shell 环境：
+
+```sh
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
 ### 8.3 启动前端
 
-```powershell
+```sh
 cd frontend
 npm install
 npm run dev

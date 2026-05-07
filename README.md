@@ -1,6 +1,6 @@
 # vibe-image
 
-本地浏览器 UI + Python 后端，把 `demo.py` 中的单次提示词生图扩展为可长期运行的服务：提示词资产化、并发可调、队列限流、历史记录与图片绑定。
+本地浏览器 UI + Python 后端，提示词生图服务：提示词资产化、并发可调、队列限流、历史记录与图片绑定。
 
 参考文档：
 - 产品需求：`docs/prd.md`
@@ -14,8 +14,17 @@
 
 复制配置模板并填入真实 api_key：
 
+Windows PowerShell 环境：
+
 ```powershell
 Copy-Item config/config.example.yaml config/config.yaml
+# 编辑 config/config.yaml，把 api.api_key 改成真实 key
+```
+
+macOS / Linux shell 环境：
+
+```sh
+cp config/config.example.yaml config/config.yaml
 # 编辑 config/config.yaml，把 api.api_key 改成真实 key
 ```
 
@@ -23,10 +32,22 @@ Copy-Item config/config.example.yaml config/config.yaml
 
 ### 启动后端
 
+Windows PowerShell 环境：
+
 ```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+macOS / Linux shell 环境：
+
+```sh
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -37,7 +58,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 ### 运行测试
 
-```powershell
+```sh
 cd backend
 pytest -q
 ```
@@ -52,7 +73,7 @@ pytest -q
 
 ## Frontend
 
-Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router 单页应用。
+Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router 应用。
 
 ### 前置
 
@@ -61,7 +82,7 @@ Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router 单页应用。
 
 ### 启动开发模式
 
-```powershell
+```sh
 cd frontend
 npm install
 npm run dev
@@ -74,9 +95,7 @@ npm run dev
 
 ### 构建生产包
 
-```powershell
+```sh
 cd frontend
 npm run build
 ```
-
-构建命令会先跑 `vue-tsc --noEmit` 做类型检查再产出 `dist/`，这是 PR 合并前的硬门槛。
