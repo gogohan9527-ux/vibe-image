@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+build/
+dist/
+
+# Node / Vite
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.vitepress/dist/
+frontend/coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+*.local
+
+# Local config (never commit real api_key)
+config/config.yaml
+
+# Local data
+data/
+!data/.gitkeep
+
+# Generated images (keep folder, not contents)
+images/*
+!images/.gitkeep
+
+# User prompt assets (only sample is shared)
+prompt/prompt_*.json
+!prompt/prompt_sample.json
+
+# Logs and runtime files
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Editors / OS
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test and tooling caches
+.cache/
+.parcel-cache/
+.eslintcache
+playwright-report/
+test-results/
+
+# AI tools
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.continue/
+.aider*
+.copilot/
+*.chat.md
+*.prompt.md
+ai-output/
+ai_outputs/
+llm-output/
+llm_outputs/
