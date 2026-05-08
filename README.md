@@ -32,6 +32,13 @@ cp config/config.example.yaml config/config.yaml
 
 ### 启动后端
 
+#### 首次启动
+
+```sh
+cd backend
+python -m app.scripts.init_db
+```
+
 Windows PowerShell 环境：
 
 ```powershell
@@ -69,7 +76,7 @@ pytest -q
 
 - 任务持久化在 `data/vibe.db`（SQLite，由 `.gitignore` 排除）。
 - 生成的图片落到 `images/generated_<task_id>.<ext>`。
-- 提示词模板是 `prompt/prompt_<id>.json`；只有 `prompt_sample.json` 入库。
+- 提示词模板种子文件在 `prompt/prompt_*.json`，通过 `init_db` 脚本导入 SQLite。
 
 ## Frontend
 
@@ -99,3 +106,34 @@ npm run dev
 cd frontend
 npm run build
 ```
+
+---
+
+## Frontend：新建任务的标题与模板
+
+### 任务标题（可选）
+
+在「新建任务」抽屉顶部新增了**标题**输入框（最多 60 字）：
+
+- **留空**：后端自动取 prompt 前 30 个字符作为标题兜底；若生成完成后响应中包含可用文本则自动回填。
+- **填写**：后端直接使用该标题，不再兜底替换。
+
+### 模板下拉
+
+打开「新建任务」抽屉时，模板下拉会自动从后端加载 `prompt_templates` 表的全部数据。选中模板后，提示词文本框自动填入该模板内容。
+
+### 保存为模板
+
+勾选「将本次提示词保存为模板」时：
+
+- 可选填「模板名称」（留空将取 prompt 前 40 字自动命名）。
+- 提交任务时，后端同步把该提示词写入 `prompt_templates` 表。
+- 下次打开新建任务抽屉，新模板即出现在下拉列表中。
+
+### 模板配置页
+
+侧边栏新增「模板配置」入口，点击进入 `/templates` 页面，支持：
+
+- **新建模板**：填写名称 + 内容，提交后立即生效。
+- **编辑模板**：修改已有模板的名称或内容。
+- **删除模板**：`el-popconfirm` 二次确认；内置示例模板（`sample`）删除按钮禁用。

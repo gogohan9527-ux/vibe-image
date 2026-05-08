@@ -11,6 +11,7 @@ import type {
   PromptItem,
   Settings,
   TaskItem,
+  UpdatePromptRequest,
   UpdateSettingsRequest,
 } from '@/types/api';
 
@@ -104,6 +105,10 @@ export function createPrompt(payload: CreatePromptRequest): Promise<PromptItem> 
 
 export function deletePrompt(promptId: string): Promise<void> {
   return request<void>('DELETE', `/api/prompts/${encodeURIComponent(promptId)}`);
+}
+
+export function updatePrompt(promptId: string, payload: UpdatePromptRequest): Promise<PromptItem> {
+  return request<PromptItem>('PUT', `/api/prompts/${encodeURIComponent(promptId)}`, payload);
 }
 
 // --- Settings ---

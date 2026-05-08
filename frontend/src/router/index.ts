@@ -11,6 +11,11 @@ const routes: RouteRecordRaw[] = [
     name: 'history',
     component: () => import('@/views/HistoryView.vue'),
   },
+  {
+    path: '/templates',
+    name: 'templates',
+    component: () => import('@/views/PromptTemplatesView.vue'),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 

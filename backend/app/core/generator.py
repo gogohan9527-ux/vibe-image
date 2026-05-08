@@ -73,11 +73,17 @@ def generate_image(
     config: GeneratorConfig,
     cancel_event: Optional[threading.Event] = None,
     progress_cb: Optional[Callable[[int], None]] = None,
+    metadata_cb: Optional[Callable[[dict], None]] = None,
 ) -> Path:
     """Run one generation. Returns the path to the saved image.
 
     Raises ``CancelledError`` if cancelled, ``UpstreamError`` for upstream
     failures.
+
+    ``metadata_cb`` (if provided) is called once with the parsed upstream
+    response dict on success. Callers may use it for best-effort metadata
+    extraction (e.g. ``revised_prompt`` for the task title). Errors raised
+    by the callback are logged and swallowed.
     """
 
     def _emit(p: int) -> None:
@@ -86,6 +92,14 @@ def generate_image(
                 progress_cb(p)
             except Exception:  # noqa: BLE001 - progress callback errors must not break the task
                 logger.exception("progress_cb raised; ignoring")
+
+    def _emit_metadata(payload: dict) -> None:
+        if metadata_cb is None:
+            return
+        try:
+            metadata_cb(payload)
+        except Exception:  # noqa: BLE001 - metadata callback must not break the task
+            logger.exception("metadata_cb raised; ignoring")
 
     _check_cancel(cancel_event)
     _emit(10)
@@ -136,6 +150,7 @@ def generate_image(
         ) from exc
 
     image_url = _extract_image_url(result)
+    _emit_metadata(result)
 
     _check_cancel(cancel_event)
     _emit(50)

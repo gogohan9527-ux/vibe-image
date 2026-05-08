@@ -1,7 +1,8 @@
-"""SQLite storage for tasks + filesystem-backed prompt asset CRUD.
+"""SQLite storage for tasks and prompt template CRUD.
 
-Tasks live in a single SQLite table. Prompts live as JSON files in
-``paths.prompts_dir`` (one file per prompt) — they are NOT stored in SQLite.
+Tasks live in the ``tasks`` table. Prompt templates live in the
+``prompt_templates`` table; ``paths.prompts_dir`` is only used for seed JSON
+files imported by the explicit init command.
 
 Threading model: a single shared ``sqlite3.Connection`` is created with
 ``check_same_thread=False`` and protected by a module-level ``RLock``. All
@@ -12,6 +13,7 @@ Timestamps are ISO-8601 strings in UTC ("Z" suffix).
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -22,32 +24,16 @@ from typing import Iterable, List, Optional
 from ..errors import PromptConflictError, PromptNotFoundError, TaskNotFoundError
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    prompt_id TEXT NULL,
-    prompt_text TEXT NOT NULL,
-    model TEXT NOT NULL,
-    size TEXT NOT NULL,
-    quality TEXT NOT NULL,
-    format TEXT NOT NULL,
-    status TEXT NOT NULL,
-    progress INTEGER NOT NULL DEFAULT 0,
-    image_path TEXT NULL,
-    error_message TEXT NULL,
-    created_at TEXT NOT NULL,
-    started_at TEXT NULL,
-    finished_at TEXT NULL,
-    priority INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
-"""
+logger = logging.getLogger(__name__)
+
+
+_SQL_DIR = Path(__file__).parent / "sql"
+
 
 TASK_COLUMNS = (
     "id",
-    "prompt_id",
-    "prompt_text",
+    "prompt_template_id",
+    "prompt",
     "model",
     "size",
     "quality",
@@ -60,6 +46,7 @@ TASK_COLUMNS = (
     "started_at",
     "finished_at",
     "priority",
+    "title",
 )
 
 
@@ -90,8 +77,127 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
+
+    # ---------- Initialization ----------
+
+    def init_db(self) -> list[dict]:
+        """Initialize all modules. Safe to run repeatedly."""
+        results = []
+        for fn in [self._init_tasks_module, self._init_prompt_templates_module]:
+            try:
+                result = fn()
+                results.append(result)
+            except Exception as exc:
+                module = fn.__name__.removeprefix("_init_").removesuffix("_module")
+                logger.error("%s 模块初始化异常: %s", module, exc)
+                raise
+        return results
+
+    # ---------- Tasks Module ----------
+
+    def _init_tasks_module(self) -> dict:
+        """Initialize tasks table and indexes from sql/tasks.sql."""
+        sql = (_SQL_DIR / "tasks.sql").read_text(encoding="utf-8")
         with self._lock:
-            self._conn.executescript(SCHEMA)
+            exists = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+            ).fetchone() is not None
+            self._conn.executescript(sql)
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(tasks)")}
+            # Migrate old column names
+            if "prompt" not in cols and "prompt_text" in cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks RENAME COLUMN prompt_text TO prompt"
+                )
+            if "prompt_template_id" not in cols and "prompt_id" in cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks RENAME COLUMN prompt_id TO prompt_template_id"
+                )
+        status = "exists" if exists else "created"
+        return {
+            "module": "tasks",
+            "status": status,
+            "message": f"tasks 模块初始化完成 (status={status})"
+        }
+
+    # ---------- Prompt Templates Module ----------
+
+    def _init_prompt_templates_module(self) -> dict:
+        """Initialize prompt_templates table and indexes from sql/prompt_templates.sql."""
+        """and seed data."""
+        sql = (_SQL_DIR / "prompt_templates.sql").read_text(encoding="utf-8")
+        with self._lock:
+            exists = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_templates'"
+            ).fetchone() is not None
+            self._conn.executescript(sql)
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(prompt_templates)")}
+            # Migrate old column names: name → title, content → prompt
+            if "title" not in cols and "name" in cols:
+                self._conn.execute(
+                    "ALTER TABLE prompt_templates RENAME COLUMN name TO title"
+                )
+            if "prompt" not in cols and "content" in cols:
+                self._conn.execute(
+                    "ALTER TABLE prompt_templates RENAME COLUMN content TO prompt"
+                )
+        status = "exists" if exists else "created"
+        imported, skipped = self.init_prompt_templates_from_files()
+        return {
+            "module": "prompt_templates",
+            "status": status,
+            "imported": imported,
+            "skipped": skipped,
+            "message": f"prompt_templates 模块初始化完成 (status={status}, imported={imported}, skipped={skipped})",
+        }
+
+    # ---------- Prompt Template Seed Import ----------
+
+    def init_prompt_templates_from_files(self) -> tuple[int, int]:
+        """Scan ``<project_root>/prompt/prompt_*.json`` and INSERT OR IGNORE.
+
+        Returns ``(imported, skipped)``. Malformed JSON files are logged at
+        WARN level and skipped (not raised). Already-present ids are skipped
+        and never overwritten.
+
+        JSON files may use either ``title``/``prompt`` (new) or ``name``/``content``
+        (legacy) field names.
+        """
+        imported = 0
+        skipped = 0
+        for path in sorted(self.prompts_dir.glob("prompt_*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Skipping %s: %s", path.name, exc)
+                continue
+            if not isinstance(data, dict):
+                logger.warning("Skipping %s: not a JSON object", path.name)
+                continue
+            pid = data.get("id")
+            # Support both new (title/prompt) and legacy (name/content) field names.
+            title = data.get("title") or data.get("name")
+            prompt = data.get("prompt") or data.get("content")
+            if not (isinstance(pid, str) and pid
+                    and isinstance(title, str) and title
+                    and isinstance(prompt, str) and prompt):
+                logger.warning(
+                    "Skipping %s: missing required keys (id/title/prompt)",
+                    path.name,
+                )
+                continue
+            created_at = data.get("created_at") or utcnow_iso()
+            with self._lock:
+                if self._prompt_id_exists(pid):
+                    skipped += 1
+                    continue
+                self._conn.execute(
+                    "INSERT INTO prompt_templates "
+                    "(id, title, prompt, created_at) VALUES (?, ?, ?, ?)",
+                    (pid, title, prompt, created_at),
+                )
+                imported += 1
+        return imported, skipped
 
     def close(self) -> None:
         with self._lock:
@@ -154,7 +260,7 @@ class Storage:
         where: list[str] = []
         params: list = []
         if query:
-            where.append("prompt_text LIKE ?")
+            where.append("prompt LIKE ?")
             params.append(f"%{query}%")
         if statuses:
             placeholders = ",".join("?" for _ in statuses)
@@ -189,6 +295,10 @@ class Storage:
         progress = max(0, min(100, int(progress)))
         return self.update_task_fields(task_id, progress=progress)
 
+    def update_task_title(self, task_id: str, title: str) -> dict:
+        """Best-effort title overwrite from the generator's response."""
+        return self.update_task_fields(task_id, title=title)
+
     def delete_task(self, task_id: str) -> bool:
         """Delete a task row. Returns True if a row was removed, False otherwise."""
         with self._lock:
@@ -205,83 +315,124 @@ class Storage:
             )
             return cur.rowcount
 
-    # ---------- Prompts (filesystem) ----------
+    # ---------- Prompts (SQLite-backed) ----------
 
-    def _prompt_path(self, prompt_id: str) -> Path:
-        return self.prompts_dir / f"prompt_{prompt_id}.json"
+    def _prompt_id_exists(self, prompt_id: str) -> bool:
+        """Caller must hold ``self._lock``."""
+        row = self._conn.execute(
+            "SELECT 1 FROM prompt_templates WHERE id = ?", (prompt_id,)
+        ).fetchone()
+        return row is not None
+
+    def _make_unique_prompt_id(self, base: str) -> str:
+        """Caller must hold ``self._lock``. Mirrors the previous slug+suffix logic."""
+        candidate = base
+        suffix = 2
+        while self._prompt_id_exists(candidate):
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
 
     def list_prompts(self) -> List[dict]:
-        results: List[dict] = []
-        for p in sorted(self.prompts_dir.glob("prompt_*.json")):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if "id" in data and "name" in data and "content" in data:
-                data.setdefault("created_at", utcnow_iso())
-                results.append(data)
-        results.sort(key=lambda d: d.get("created_at", ""), reverse=True)
-        return results
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, prompt, created_at FROM prompt_templates "
+                "ORDER BY created_at DESC"
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
 
     def get_prompt(self, prompt_id: str) -> dict:
-        path = self._prompt_path(prompt_id)
-        if not path.exists():
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, title, prompt, created_at FROM prompt_templates "
+                "WHERE id = ?",
+                (prompt_id,),
+            ).fetchone()
+        if row is None:
             raise PromptNotFoundError(f"Prompt {prompt_id} not found.")
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PromptNotFoundError(
-                f"Prompt {prompt_id} unreadable: {exc}"
-            ) from exc
-        return data
+        return _row_to_dict(row)
 
     def save_prompt(
         self,
-        name: str,
-        content: str,
+        title: str,
+        prompt: str,
         prompt_id: Optional[str] = None,
     ) -> dict:
-        base = slugify(prompt_id or name)
-        candidate = base
-        suffix = 2
-        while self._prompt_path(candidate).exists():
-            candidate = f"{base}-{suffix}"
-            suffix += 1
-        record = {
-            "id": candidate,
-            "name": name,
-            "content": content,
-            "created_at": utcnow_iso(),
-        }
-        self._prompt_path(candidate).write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        base = slugify(prompt_id or title)
+        with self._lock:
+            candidate = self._make_unique_prompt_id(base)
+            record = {
+                "id": candidate,
+                "title": title,
+                "prompt": prompt,
+                "created_at": utcnow_iso(),
+            }
+            self._conn.execute(
+                "INSERT INTO prompt_templates (id, title, prompt, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (record["id"], record["title"], record["prompt"], record["created_at"]),
+            )
         return record
 
+    def update_prompt(
+        self,
+        prompt_id: str,
+        title: Optional[str] = None,
+        prompt: Optional[str] = None,
+    ) -> dict:
+        if title is None and prompt is None:
+            raise ValueError("At least one of title or prompt must be provided.")
+        sets: List[str] = []
+        params: List[object] = []
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
+        if prompt is not None:
+            sets.append("prompt = ?")
+            params.append(prompt)
+        params.append(prompt_id)
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE prompt_templates SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+            if cur.rowcount == 0:
+                raise PromptNotFoundError(f"Prompt {prompt_id} not found.")
+            row = self._conn.execute(
+                "SELECT id, title, prompt, created_at FROM prompt_templates "
+                "WHERE id = ?",
+                (prompt_id,),
+            ).fetchone()
+        return _row_to_dict(row)
+
     def delete_prompt(self, prompt_id: str) -> None:
-        path = self._prompt_path(prompt_id)
-        if not path.exists():
-            raise PromptNotFoundError(f"Prompt {prompt_id} not found.")
         if prompt_id == "sample":
+            with self._lock:
+                exists = self._prompt_id_exists(prompt_id)
+            if not exists:
+                raise PromptNotFoundError(f"Prompt {prompt_id} not found.")
             raise PromptConflictError("Cannot delete the bundled sample prompt.")
-        path.unlink()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM prompt_templates WHERE id = ?", (prompt_id,)
+            )
+            if cur.rowcount == 0:
+                raise PromptNotFoundError(f"Prompt {prompt_id} not found.")
 
     def ensure_sample_prompt(self) -> None:
-        sample = self._prompt_path("sample")
-        if sample.exists():
-            return
+        """Insert the bundled sample template if not already present."""
         record = {
             "id": "sample",
-            "name": "示例：花园里的猫",
-            "content": "A cute cat playing in a garden",
+            "title": "示例：花园里的猫",
+            "prompt": "A cute cat playing in a garden",
             "created_at": "2026-05-07T00:00:00Z",
         }
-        sample.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO prompt_templates "
+                "(id, title, prompt, created_at) VALUES (?, ?, ?, ?)",
+                (record["id"], record["title"], record["prompt"], record["created_at"]),
+            )
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     return {k: row[k] for k in row.keys()}

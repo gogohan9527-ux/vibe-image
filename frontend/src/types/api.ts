@@ -1,5 +1,4 @@
-// Type definitions mirroring docs/interface.md
-// Source of truth: docs/interface.md §7
+// Type definitions mirroring the backend API schemas.
 
 export type TaskStatus =
   | 'queued'
@@ -11,8 +10,9 @@ export type TaskStatus =
 
 export interface TaskItem {
   id: string;
-  prompt_id: string | null;
-  prompt_text: string;
+  prompt_template_id: string | null;
+  prompt: string;
+  title?: string | null;
   model: string;
   size: string;
   quality: string;
@@ -30,8 +30,8 @@ export interface TaskItem {
 
 export interface PromptItem {
   id: string;
-  name: string;
-  content: string;
+  title: string;
+  prompt: string;
   created_at: string;
 }
 
@@ -42,11 +42,15 @@ export interface Settings {
   max_queue_size: number;
 }
 
+export interface UpdatePromptRequest {
+  title?: string;
+  prompt?: string;
+}
+
 export interface CreateTaskRequest {
   prompt: string;
-  prompt_id?: string | null;
+  prompt_template_id?: string | null;
   save_as_template?: boolean;
-  template_name?: string | null;
   model?: string | null;
   size?: string | null;
   quality?: 'low' | 'medium' | 'high' | 'auto' | null;
@@ -68,8 +72,8 @@ export interface ListPromptsResponse {
 }
 
 export interface CreatePromptRequest {
-  name: string;
-  content: string;
+  title: string;
+  prompt: string;
   id?: string | null;
 }
 
@@ -99,7 +103,7 @@ export interface UpdateSettingsRequest {
   queue_cap?: number;
 }
 
-// SSE event payloads (per docs/interface.md §1.5)
+// SSE event payloads
 export interface SseStatusEvent {
   task_id: string;
   status: TaskStatus;

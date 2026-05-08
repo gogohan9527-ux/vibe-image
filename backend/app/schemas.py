@@ -21,9 +21,8 @@ TaskStatus = Literal[
 
 class TaskCreateRequest(BaseModel):
     prompt: str = Field(min_length=1)
-    prompt_id: Optional[str] = None
+    prompt_template_id: Optional[str] = None
     save_as_template: bool = False
-    template_name: Optional[str] = None
     model: Optional[str] = None
     size: Optional[str] = None
     # Allowed values: "low" | "medium" | "high" | "auto".
@@ -36,8 +35,9 @@ class TaskCreateRequest(BaseModel):
 
 class TaskItem(BaseModel):
     id: str
-    prompt_id: Optional[str] = None
-    prompt_text: str
+    prompt_template_id: Optional[str] = None
+    prompt: str
+    title: Optional[str] = None
     model: str
     size: str
     quality: str
@@ -54,11 +54,6 @@ class TaskItem(BaseModel):
     @computed_field  # type: ignore[misc]
     @property
     def image_url(self) -> Optional[str]:
-        """URL the frontend can hit to fetch the rendered image.
-
-        Derived from ``image_path``: just the basename, mounted under the
-        backend's static ``/images`` route. ``None`` until the task succeeds.
-        """
         if not self.image_path:
             return None
         return f"/images/{os.path.basename(self.image_path)}"
@@ -81,8 +76,8 @@ class TaskCancelResponse(BaseModel):
 
 class PromptItem(BaseModel):
     id: str
-    name: str
-    content: str
+    title: str
+    prompt: str
     created_at: str
 
 
@@ -91,9 +86,14 @@ class PromptListResponse(BaseModel):
 
 
 class PromptCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    content: str = Field(min_length=1)
-    id: Optional[str] = None  # if omitted, derived from name
+    title: str = Field(min_length=1, max_length=120)
+    prompt: str = Field(min_length=1)
+    id: Optional[str] = None  # if omitted, derived from title
+
+
+class PromptUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    prompt: Optional[str] = Field(default=None, min_length=1)
 
 
 # ---------- Settings ----------

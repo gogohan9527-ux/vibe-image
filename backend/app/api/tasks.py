@@ -28,12 +28,12 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 def _resolve_task_input(req: TaskCreateRequest, config: AppConfig) -> TaskInput:
     return TaskInput(
-        prompt_text=req.prompt,
+        prompt=req.prompt,
         model=req.model or config.api.default_model,
         size=req.size or config.api.default_size,
         quality=req.quality or config.api.default_quality,
         format=req.format or config.api.default_format,
-        prompt_id=req.prompt_id,
+        prompt_template_id=req.prompt_template_id,
         priority=req.priority,
     )
 
@@ -44,10 +44,9 @@ def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse
     manager: TaskManager = request.app.state.task_manager
     storage: Storage = request.app.state.storage
 
-    # Optionally save the prompt as a template.
+    # Optionally save the prompt as a template (title auto-derived from first 30 chars).
     if req.save_as_template:
-        name = req.template_name or req.prompt[:40]
-        storage.save_prompt(name=name, content=req.prompt)
+        storage.save_prompt(title=req.prompt[:30], prompt=req.prompt)
 
     rows: List[dict] = []
     base_input = _resolve_task_input(req, config)

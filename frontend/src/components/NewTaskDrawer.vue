@@ -14,7 +14,7 @@ import {
   ElIcon,
 } from 'element-plus';
 import { Delete } from '@element-plus/icons-vue';
-import { ApiError, createPrompt, createTask, deletePrompt, listPrompts } from '@/api/client';
+import { ApiError, createTask, deletePrompt, listPrompts } from '@/api/client';
 import { useTaskStore } from '@/stores/useTaskStore';
 import type { CreateTaskRequest, PromptItem } from '@/types/api';
 
@@ -84,7 +84,7 @@ watch(
 watch(selectedTemplateId, (id) => {
   if (!id) return;
   const t = templates.value.find((x) => x.id === id);
-  if (t) prompt.value = t.content;
+  if (t) prompt.value = t.prompt;
 });
 
 async function onDeleteTemplate(id: string): Promise<void> {
@@ -121,26 +121,15 @@ async function submit(): Promise<void> {
   }
   submitting.value = true;
   try {
-    let promptId = selectedTemplateId.value;
-
-    if (saveAsTemplate.value && !promptId) {
-      try {
-        const name = `模板 ${new Date().toLocaleString('zh-CN')}`;
-        const created = await createPrompt({ name, content: text });
-        promptId = created.id;
-      } catch (err) {
-        if (err instanceof ApiError) ElMessage.warning(`保存模板失败：${err.message}`);
-      }
-    }
-
     const payload: CreateTaskRequest = {
       prompt: text,
-      prompt_id: promptId,
+      prompt_template_id: selectedTemplateId.value,
       model: model.value,
       quality: quality.value,
       size: size.value,
       n: count.value,
       priority: priority.value,
+      save_as_template: saveAsTemplate.value || undefined,
     };
 
     const res = await createTask(payload);
@@ -205,11 +194,11 @@ async function submit(): Promise<void> {
             <ElOption
               v-for="t in templates"
               :key="t.id"
-              :label="t.name"
+              :label="t.title"
               :value="t.id"
             >
               <div class="option-row">
-                <span class="option-name">{{ t.name }}</span>
+                <span class="option-name">{{ t.title }}</span>
                 <button
                   v-if="t.id !== 'sample'"
                   type="button"

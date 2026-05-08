@@ -37,7 +37,6 @@ def _configure_logging() -> None:
 async def _lifespan(app: FastAPI):
     config: AppConfig = app.state.config
     storage = Storage(db_path=config.database_path, prompts_dir=config.prompts_dir)
-    storage.ensure_sample_prompt()
     storage.mark_orphaned_running_as_failed()
     config.images_dir.mkdir(parents=True, exist_ok=True)
 

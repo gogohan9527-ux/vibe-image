@@ -13,7 +13,7 @@ from app.errors import QueueFullError
 
 def _input(prompt: str = "p") -> TaskInput:
     return TaskInput(
-        prompt_text=prompt,
+        prompt=prompt,
         model="t8-/gpt-image-2",
         size="1024x1024",
         quality="low",
@@ -27,7 +27,7 @@ def test_queue_full_rejects_after_cap(app_config, storage, manager_factory):
     started_count = {"n": 0}
     started_lock = threading.Lock()
 
-    def slow_runner(task, config, cancel_event=None, progress_cb=None):
+    def slow_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
         with started_lock:
             started_count["n"] += 1
         # Block until the test releases us.
@@ -55,7 +55,7 @@ def test_queue_full_rejects_after_cap(app_config, storage, manager_factory):
 def test_cancel_pending_drops_task(app_config, storage, manager_factory):
     blocker = threading.Event()
 
-    def slow_runner(task, config, cancel_event=None, progress_cb=None):
+    def slow_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
         blocker.wait(timeout=5)
         return config.images_dir / f"generated_{task.task_id}.jpeg"
 
@@ -86,7 +86,7 @@ def test_cancel_running_sets_event(app_config, storage, manager_factory):
     started = threading.Event()
     cancel_observed = threading.Event()
 
-    def slow_runner(task, config, cancel_event=None, progress_cb=None):
+    def slow_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
         started.set()
         # poll for cancel
         deadline = time.time() + 3
@@ -118,7 +118,7 @@ def test_cancel_running_sets_event(app_config, storage, manager_factory):
 def test_concurrency_change_keeps_running_tasks(app_config, manager_factory, storage):
     barrier = threading.Event()
 
-    def slow_runner(task, config, cancel_event=None, progress_cb=None):
+    def slow_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
         barrier.wait(timeout=5)
         return config.images_dir / f"generated_{task.task_id}.jpeg"
 

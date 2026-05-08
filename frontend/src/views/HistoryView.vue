@@ -104,8 +104,8 @@ function narrowQuality(q: string): CreateTaskRequest['quality'] {
 async function onRegenerate(row: TaskItem): Promise<void> {
   try {
     const res = await createTask({
-      prompt: row.prompt_text,
-      prompt_id: row.prompt_id,
+      prompt: row.prompt,
+      prompt_template_id: row.prompt_template_id,
       model: row.model,
       size: row.size,
       quality: narrowQuality(row.quality),
@@ -203,8 +203,8 @@ const totalForPager = computed(() => total.value);
 
         <ElTableColumn label="提示词" min-width="240">
           <template #default="{ row }: { row: TaskItem }">
-            <ElTooltip :content="row.prompt_text" placement="top" :show-after="400">
-              <p class="cell-prompt">{{ row.prompt_text }}</p>
+            <ElTooltip :content="row.prompt" placement="top" :show-after="400">
+              <p class="cell-prompt">{{ row.title || row.prompt }}</p>
             </ElTooltip>
           </template>
         </ElTableColumn>

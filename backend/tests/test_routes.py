@@ -28,7 +28,7 @@ def _build_app(config: AppConfig, generator_runner):
 @pytest.fixture
 def client(app_config, monkeypatch):
     # Stub out the actual generator: produce a tiny file and call progress callbacks.
-    def fake_runner(task, config, cancel_event=None, progress_cb=None):
+    def fake_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
         for p in (10, 50, 80, 100):
             if cancel_event is not None and cancel_event.is_set():
                 from app.errors import CancelledError
@@ -131,22 +131,21 @@ def test_settings_out_of_range(client):
 
 
 def test_prompts_crud(client):
-    # Sample is created on startup.
+    # Lifespan no longer auto-seeds; templates are created via the explicit
+    # init script or by saving from the new-task flow.
     r = client.get("/api/prompts")
     assert r.status_code == 200
-    items = r.json()["prompts"]
-    assert any(p["id"] == "sample" for p in items)
 
     # Create one.
     r = client.post(
-        "/api/prompts", json={"name": "moonlit forest", "content": "moonlit forest with fireflies"}
+        "/api/prompts", json={"title": "moonlit forest", "prompt": "moonlit forest with fireflies"}
     )
     assert r.status_code == 201
     new_id = r.json()["id"]
 
     r = client.get(f"/api/prompts/{new_id}")
     assert r.status_code == 200
-    assert r.json()["content"] == "moonlit forest with fireflies"
+    assert r.json()["prompt"] == "moonlit forest with fireflies"
 
     r = client.delete(f"/api/prompts/{new_id}")
     assert r.status_code == 204
@@ -185,8 +184,8 @@ def _insert_fake_task(
     storage = client.app.state.storage
     row = {
         "id": task_id,
-        "prompt_id": None,
-        "prompt_text": "fake history task",
+        "prompt_template_id": None,
+        "prompt": "fake history task",
         "model": "t8-/gpt-image-2",
         "size": "1024x1024",
         "quality": "low",

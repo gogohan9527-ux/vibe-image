@@ -105,8 +105,8 @@ const avatarHue = computed(() => {
         </ElTag>
       </div>
 
-      <ElTooltip :content="task.prompt_text" placement="top" :show-after="400">
-        <p class="task-prompt">{{ task.prompt_text }}</p>
+      <ElTooltip :content="task.prompt" placement="top" :show-after="400">
+        <p class="task-prompt">{{ task.title || task.prompt }}</p>
       </ElTooltip>
 
       <div class="task-meta">创建时间：{{ formatDateTime(task.created_at) }}</div>

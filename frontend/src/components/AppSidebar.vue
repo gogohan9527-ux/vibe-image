@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElButton, ElIcon } from 'element-plus';
-import { Plus, List, Clock, Setting, Picture } from '@element-plus/icons-vue';
+import { Plus, List, Clock, Setting, Picture, Document } from '@element-plus/icons-vue';
 
 defineEmits<{
   (e: 'new-task'): void;
@@ -15,9 +15,13 @@ const router = useRouter();
 const navItems = computed(() => [
   { key: 'tasks', label: '任务列表', path: '/', icon: List },
   { key: 'history', label: '历史记录', path: '/history', icon: Clock },
+  { key: 'templates', label: '模板配置', path: '/templates', icon: Document },
 ]);
 
-const activeKey = computed(() => (route.path === '/history' ? 'history' : 'tasks'));
+const activeKey = computed(() => {
+  const matched = navItems.value.find((item) => item.path === route.path);
+  return matched ? matched.key : 'tasks';
+});
 
 function go(path: string): void {
   if (route.path !== path) {

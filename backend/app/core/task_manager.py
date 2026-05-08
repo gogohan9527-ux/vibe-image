@@ -42,17 +42,42 @@ from .storage import Storage, utcnow_iso
 logger = logging.getLogger(__name__)
 
 
+def _extract_revised_prompt(payload: object) -> Optional[str]:
+    """Best-effort lookup of a human-readable summary in the upstream response.
+
+    The OpenAI-shaped image-generation API may return
+    ``{"data": [{"url": "...", "revised_prompt": "..."}]}``. We look there
+    first, then fall back to a top-level ``revised_prompt``. Returns the
+    trimmed string when present and non-empty, otherwise None.
+
+    Note: as of this implementation the upstream we hit (see
+    ``backend/app/core/generator.py``) does not guarantee this field; the
+    title-from-response path is best-effort.
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        candidate = data[0].get("revised_prompt")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    candidate = payload.get("revised_prompt")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
 Listener = Callable[[dict], None]
 
 
 @dataclass
 class TaskInput:
-    prompt_text: str
+    prompt: str
     model: str
     size: str
     quality: str
     format: str
-    prompt_id: Optional[str] = None
+    prompt_template_id: Optional[str] = None
     priority: bool = False
 
 
@@ -62,6 +87,9 @@ class TaskHandle:
     task_input: TaskInput
     cancel_event: threading.Event = field(default_factory=threading.Event)
     future: Optional[Future] = None
+    # True when the user provided a non-empty title; tells the generator
+    # completion path to NOT overwrite the title with response text.
+    title_locked: bool = False
 
 
 class TaskManager:
@@ -109,11 +137,17 @@ class TaskManager:
             if current >= self._queue_cap:
                 raise QueueFullError(queue_size=current, cap=self._queue_cap)
             task_id = str(uuid.uuid4())
-            handle = TaskHandle(task_id=task_id, task_input=task_input)
+
+            handle = TaskHandle(
+                task_id=task_id,
+                task_input=task_input,
+                title_locked=False,
+            )
             row = {
                 "id": task_id,
-                "prompt_id": task_input.prompt_id,
-                "prompt_text": task_input.prompt_text,
+                "prompt_template_id": task_input.prompt_template_id,
+                "prompt": task_input.prompt,
+                "title": task_input.prompt.strip()[:30],
                 "model": task_input.model,
                 "size": task_input.size,
                 "quality": task_input.quality,
@@ -283,7 +317,7 @@ class TaskManager:
         )
         gen_task = GeneratorTask(
             task_id=task_id,
-            prompt=task_input.prompt_text,
+            prompt=task_input.prompt,
             model=task_input.model,
             size=task_input.size,
             quality=task_input.quality,
@@ -299,12 +333,25 @@ class TaskManager:
                 {"event": "progress", "task_id": task_id, "progress": p, "status": "running"}
             )
 
+        def _on_metadata(payload: dict) -> None:
+            # Best-effort title overwrite from the upstream response.
+            if handle.title_locked:
+                return
+            revised = _extract_revised_prompt(payload)
+            if not revised:
+                return
+            try:
+                self._storage.update_task_title(task_id, revised[:30])
+            except TaskNotFoundError:
+                return
+
         try:
             image_path = self._generator_runner(
                 gen_task,
                 gen_config,
                 cancel_event=handle.cancel_event,
                 progress_cb=_on_progress,
+                metadata_cb=_on_metadata,
             )
         except CancelledError:
             self._finalize_cancelled(handle)
