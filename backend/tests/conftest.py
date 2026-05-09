@@ -14,8 +14,8 @@ if str(BACKEND_ROOT) not in sys.path:
 
 
 from app.config import (  # noqa: E402
-    ApiConfig,
     AppConfig,
+    DefaultsConfig,
     ExecutorConfig,
     PathsConfig,
     ServerConfig,
@@ -33,15 +33,7 @@ def make_config(tmp_path: Path, **overrides) -> AppConfig:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     cfg = AppConfig(
-        api=ApiConfig(
-            base_url="https://example.invalid/v1/images/generations",
-            api_key="sk-test-key",
-            default_model="t8-/gpt-image-2",
-            default_size="1024x1024",
-            default_quality="low",
-            default_format="jpeg",
-            request_timeout_seconds=5,
-        ),
+        mode=overrides.get("mode", "normal"),
         server=ServerConfig(host="127.0.0.1", port=8000, cors_origins=[]),
         executor=ExecutorConfig(
             default_concurrency=overrides.get("concurrency", 2),
@@ -54,6 +46,7 @@ def make_config(tmp_path: Path, **overrides) -> AppConfig:
             prompts_dir=str(prompts_dir),
             database_path=str(db_path),
         ),
+        defaults=DefaultsConfig(request_timeout_seconds=5),
     )
     return cfg
 

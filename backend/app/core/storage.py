@@ -47,6 +47,9 @@ TASK_COLUMNS = (
     "finished_at",
     "priority",
     "title",
+    "provider_id",
+    "key_id",
+    "input_image_path",
 )
 
 
@@ -83,13 +86,20 @@ class Storage:
         except sqlite3.OperationalError as exc:
             logger.warning("WAL journal mode unavailable (%s); using default rollback journal", exc)
         self._conn.execute("PRAGMA foreign_keys=ON;")
+        # Ensure schema exists. Safe to run on every startup; CREATE TABLE
+        # statements are guarded by IF NOT EXISTS and ALTER calls probe first.
+        self.init_db()
 
     # ---------- Initialization ----------
 
     def init_db(self) -> list[dict]:
         """Initialize all modules. Safe to run repeatedly."""
         results = []
-        for fn in [self._init_tasks_module, self._init_prompt_templates_module]:
+        for fn in [
+            self._init_tasks_module,
+            self._init_prompt_templates_module,
+            self._init_providers_module,
+        ]:
             try:
                 result = fn()
                 results.append(result)
@@ -118,6 +128,18 @@ class Storage:
             if "prompt_template_id" not in cols and "prompt_id" in cols:
                 self._conn.execute(
                     "ALTER TABLE tasks RENAME COLUMN prompt_id TO prompt_template_id"
+                )
+            # 2026-05-09: providers/key linkage. Probe-style additive migration.
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(tasks)")}
+            if "provider_id" not in cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN provider_id TEXT NULL")
+            if "key_id" not in cols:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN key_id TEXT NULL")
+            # 2026-05-09 Addendum (II): img2img reference image path (relative
+            # to images_dir, e.g. ``temp/<sha1>.png``). NULL on legacy rows.
+            if "input_image_path" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN input_image_path TEXT NULL"
                 )
         status = "exists" if exists else "created"
         return {
@@ -155,6 +177,22 @@ class Storage:
             "imported": imported,
             "skipped": skipped,
             "message": f"prompt_templates 模块初始化完成 (status={status}, imported={imported}, skipped={skipped})",
+        }
+
+    # ---------- Providers Module ----------
+
+    def _init_providers_module(self) -> dict:
+        """Create provider_configs / provider_keys / provider_models tables."""
+        sql = (_SQL_DIR / "providers.sql").read_text(encoding="utf-8")
+        with self._lock:
+            existed = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_configs'"
+            ).fetchone() is not None
+            self._conn.executescript(sql)
+        return {
+            "module": "providers",
+            "status": "exists" if existed else "created",
+            "message": "providers 模块初始化完成",
         }
 
     # ---------- Prompt Template Seed Import ----------

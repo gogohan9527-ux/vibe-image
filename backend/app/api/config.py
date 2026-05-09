@@ -1,10 +1,10 @@
 """Runtime configuration endpoints used by the frontend.
 
-- ``GET /api/config/status``: tells the frontend whether the server already
-  has an api_key configured (via env var or yaml). When false, the frontend
-  prompts the user for credentials and submits them encrypted with each task.
-- ``GET /api/config/public-key``: returns the ephemeral RSA public key (PEM)
-  the frontend uses to encrypt the api_key.
+- ``GET /api/config/status``: returns the run mode plus a coarse
+  any-provider-configured flag the UI uses to decide whether to nudge the
+  user toward ``/providers``.
+- ``GET /api/config/public-key``: returns the ephemeral RSA public key
+  (PEM) the frontend uses to encrypt provider credentials.
 """
 
 from __future__ import annotations
@@ -14,14 +14,12 @@ from pydantic import BaseModel
 
 from ..config import AppConfig
 from ..core.crypto import CryptoManager
+from ..core.provider_store import ProviderStore
+from ..providers import PROVIDER_REGISTRY
+from ..schemas import ConfigStatusResponse
 
 
 router = APIRouter(prefix="/config", tags=["config"])
-
-
-class ConfigStatusResponse(BaseModel):
-    api_key_configured: bool
-    base_url: str
 
 
 class PublicKeyResponse(BaseModel):
@@ -31,9 +29,12 @@ class PublicKeyResponse(BaseModel):
 @router.get("/status", response_model=ConfigStatusResponse)
 def get_status(request: Request) -> ConfigStatusResponse:
     config: AppConfig = request.app.state.config
+    store: ProviderStore = request.app.state.provider_store
+    any_configured = any(
+        store.list_keys(pid) for pid in PROVIDER_REGISTRY.keys()
+    )
     return ConfigStatusResponse(
-        api_key_configured=bool(config.api.api_key),
-        base_url=config.api.base_url,
+        mode=config.mode, any_provider_configured=any_configured
     )
 
 

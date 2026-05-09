@@ -12,6 +12,10 @@ def _input(prompt: str = "a cat playing in a wide green garden", **kw) -> TaskIn
         size="1024x1024",
         quality="low",
         format="jpeg",
+        provider_id="momo",
+        key_id="test-key",
+        base_url="https://example.invalid/v1",
+        creds={"api_key": "sk-test-..."},
         **kw,
     )
 

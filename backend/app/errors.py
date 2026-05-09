@@ -86,3 +86,106 @@ class CredentialDecryptError(VibeError):
 class MissingApiKeyError(VibeError):
     code = "api_key_missing"
     http_status = 400
+
+
+class UnknownProviderError(VibeError):
+    code = "unknown_provider"
+    http_status = 400
+
+    def __init__(self, provider_id: str) -> None:
+        super().__init__(
+            message=f"unknown provider: {provider_id}", provider_id=provider_id
+        )
+        self.provider_id = provider_id
+
+
+class ProviderNotConfiguredError(VibeError):
+    code = "provider_not_configured"
+    http_status = 400
+
+    def __init__(self, provider_id: str, message: str = "") -> None:
+        super().__init__(
+            message=message or f"provider {provider_id} has no key configured",
+            provider_id=provider_id,
+        )
+        self.provider_id = provider_id
+
+
+class KeyNotFoundError(VibeError):
+    code = "key_not_found"
+    http_status = 400
+
+    def __init__(self, key_id: str, http_status: int | None = None) -> None:
+        super().__init__(message=f"key not found: {key_id}", key_id=key_id)
+        self.key_id = key_id
+        if http_status is not None:
+            self.http_status = http_status
+
+
+class InvalidCredentialsError(VibeError):
+    code = "invalid_credentials"
+    http_status = 400
+
+    def __init__(self, missing_fields: list[str]) -> None:
+        super().__init__(
+            message=f"missing required credential fields: {missing_fields}",
+            missing_fields=missing_fields,
+        )
+        self.missing_fields = missing_fields
+
+
+class ProviderCapabilityError(VibeError):
+    """Provider lacks a capability the task requires (e.g. image_input)."""
+
+    code = "provider_capability_unsupported"
+    http_status = 400
+
+    def __init__(self, provider_id: str, capability: str) -> None:
+        super().__init__(
+            message=f"provider {provider_id} does not support capability: {capability}",
+            provider_id=provider_id,
+            capability=capability,
+        )
+        self.provider_id = provider_id
+        self.capability = capability
+
+
+class InvalidUploadError(VibeError):
+    """Uploaded file did not pass MIME / header validation."""
+
+    code = "invalid_upload"
+    http_status = 400
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(message=f"invalid upload: {reason}", reason=reason)
+        self.reason = reason
+
+
+class UploadTooLargeError(VibeError):
+    """Uploaded file exceeded the configured ``max_upload_bytes``."""
+
+    code = "upload_too_large"
+    http_status = 413
+
+    def __init__(self, max_bytes: int, actual_bytes: int) -> None:
+        super().__init__(
+            message=f"upload exceeds limit ({actual_bytes} > {max_bytes} bytes)",
+            max_bytes=max_bytes,
+            actual_bytes=actual_bytes,
+        )
+        self.max_bytes = max_bytes
+        self.actual_bytes = actual_bytes
+
+
+class InputImageNotFoundError(VibeError):
+    """Referenced input image is missing or escapes images_dir."""
+
+    code = "input_image_not_found"
+    http_status = 400
+
+    def __init__(self, input_image_path: str) -> None:
+        super().__init__(
+            message=f"input image not found: {input_image_path}",
+            input_image_path=input_image_path,
+        )
+        self.input_image_path = input_image_path

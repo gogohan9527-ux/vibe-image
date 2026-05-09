@@ -60,3 +60,21 @@ class CryptoManager:
             return plaintext.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise CredentialDecryptError("decrypted payload is not valid utf-8") from exc
+
+    def decrypt_dict(self, payload: dict[str, str]) -> dict[str, str]:
+        """Decrypt each value (base64 RSA-OAEP ciphertext) into plaintext.
+
+        Used by the providers API to receive multi-field credentials. The
+        plaintext dict is intended to be consumed and discarded — callers
+        must not log or persist it.
+        """
+        if not isinstance(payload, dict):
+            raise CredentialDecryptError("encrypted_credentials must be an object")
+        out: dict[str, str] = {}
+        for key, val in payload.items():
+            if not isinstance(key, str) or not isinstance(val, str):
+                raise CredentialDecryptError(
+                    "encrypted_credentials entries must be string -> base64 string"
+                )
+            out[key] = self.decrypt(val)
+        return out

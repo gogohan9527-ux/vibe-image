@@ -18,6 +18,10 @@ def _input(prompt: str = "p") -> TaskInput:
         size="1024x1024",
         quality="low",
         format="jpeg",
+        provider_id="momo",
+        key_id="test-key",
+        base_url="https://example.invalid/v1",
+        creds={"api_key": "sk-test-..."},
     )
 
 

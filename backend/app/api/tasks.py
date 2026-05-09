@@ -6,16 +6,26 @@ import asyncio
 import json
 import queue
 import threading
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Path, Request
 from fastapi.responses import StreamingResponse
 
 from ..config import AppConfig
-from ..core.crypto import CryptoManager
+from ..core.provider_store import (
+    ProviderNotFoundInStoreError,
+    ProviderStore,
+)
 from ..core.storage import Storage
 from ..core.task_manager import TaskInput, TaskManager
-from ..errors import MissingApiKeyError
+from ..errors import (
+    InputImageNotFoundError,
+    KeyNotFoundError,
+    ProviderCapabilityError,
+    ProviderNotConfiguredError,
+    UnknownProviderError,
+)
+from ..providers import PROVIDER_REGISTRY
 from ..schemas import (
     TaskCancelResponse,
     TaskCreateRequest,
@@ -28,47 +38,97 @@ from ..schemas import (
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+_DEFAULT_SIZE = "1024x1024"
+_DEFAULT_QUALITY = "low"
+_DEFAULT_FORMAT = "jpeg"
+
+
+def _validate_input_image_path(raw: str, config: AppConfig) -> str:
+    """Validate the user-supplied ``input_image_path`` is safe + exists.
+
+    Returns the same string unchanged on success. Raises
+    ``InputImageNotFoundError`` for a missing file or a path that escapes
+    ``images_dir``.
+    """
+    # Must reference the temp/ subtree we control. Reject anything else
+    # immediately (also rejects absolute paths and Windows drive letters
+    # because those can't start with "temp/").
+    if not raw.startswith("temp/"):
+        raise InputImageNotFoundError(input_image_path=raw)
+
+    images_root = config.images_dir.resolve()
+    target = (config.images_dir / raw).resolve()
+    if not target.is_relative_to(images_root):
+        raise InputImageNotFoundError(input_image_path=raw)
+    if not target.is_file():
+        raise InputImageNotFoundError(input_image_path=raw)
+    return raw
+
+
 def _resolve_task_input(
     req: TaskCreateRequest,
+    provider_store: ProviderStore,
     config: AppConfig,
-    crypto: CryptoManager,
 ) -> TaskInput:
-    api_key_override: str | None = None
-    if req.encrypted_api_key:
-        api_key_override = crypto.decrypt(req.encrypted_api_key)
+    if req.provider_id not in PROVIDER_REGISTRY:
+        raise UnknownProviderError(req.provider_id)
 
-    effective_api_key = api_key_override or config.api.api_key
-    if not effective_api_key:
-        raise MissingApiKeyError(
-            "api_key not configured on server and no credential supplied with request"
-        )
+    # Look up the provider's persisted config (base_url + defaults). If the
+    # row does not exist the provider has never been configured — treat this
+    # as ``provider_not_configured``.
+    pcfg = provider_store.get_config(req.provider_id)
+    provider = PROVIDER_REGISTRY[req.provider_id]
+    base_url = pcfg.base_url if pcfg is not None else provider.default_base_url
+
+    # Verify the key exists for this provider, then load its credentials.
+    keys = {k.id for k in provider_store.list_keys(req.provider_id)}
+    if not keys:
+        raise ProviderNotConfiguredError(req.provider_id)
+    if req.key_id not in keys:
+        raise KeyNotFoundError(req.key_id)
+    try:
+        creds = provider_store.get_key_credentials(req.provider_id, req.key_id)
+    except ProviderNotFoundInStoreError as exc:
+        raise KeyNotFoundError(req.key_id) from exc
+
+    # 2026-05-09 Addendum (II) — img2img validation. Both checks fire BEFORE
+    # the task is queued so we can surface failures synchronously to the UI.
+    input_image_path: Optional[str] = None
+    if req.input_image_path:
+        input_image_path = _validate_input_image_path(req.input_image_path, config)
+        if not getattr(provider, "supports_image_input", False):
+            raise ProviderCapabilityError(
+                provider_id=req.provider_id, capability="image_input"
+            )
 
     return TaskInput(
         prompt=req.prompt,
-        model=req.model or config.api.default_model,
-        size=req.size or config.api.default_size,
-        quality=req.quality or config.api.default_quality,
-        format=req.format or config.api.default_format,
+        model=req.model,
+        size=req.size or _DEFAULT_SIZE,
+        quality=req.quality or _DEFAULT_QUALITY,
+        format=req.format or _DEFAULT_FORMAT,
         prompt_template_id=req.prompt_template_id,
         priority=req.priority,
-        api_key_override=api_key_override,
-        base_url_override=req.base_url,
+        provider_id=req.provider_id,
+        key_id=req.key_id,
+        base_url=base_url,
+        creds=creds,
+        input_image_path=input_image_path,
     )
 
 
 @router.post("", response_model=TaskCreateResponse, status_code=201)
 def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse:
-    config: AppConfig = request.app.state.config
     manager: TaskManager = request.app.state.task_manager
     storage: Storage = request.app.state.storage
-    crypto: CryptoManager = request.app.state.crypto
+    provider_store: ProviderStore = request.app.state.provider_store
+    config: AppConfig = request.app.state.config
 
-    # Optionally save the prompt as a template (title auto-derived from first 30 chars).
     if req.save_as_template:
         storage.save_prompt(title=req.prompt[:30], prompt=req.prompt)
 
     rows: List[dict] = []
-    base_input = _resolve_task_input(req, config, crypto)
+    base_input = _resolve_task_input(req, provider_store, config)
     for _ in range(req.n):
         row = manager.submit(base_input)
         rows.append(row)
@@ -106,14 +166,11 @@ async def stream_events(request: Request) -> StreamingResponse:
 
     NOTE: Path is ``/api/tasks/stream/events`` rather than
     ``/api/tasks/stream`` to avoid colliding with ``GET /api/tasks/{task_id}``.
-    The frontend should connect to this URL.
     """
     manager: TaskManager = request.app.state.task_manager
 
     q: "queue.Queue[dict]" = queue.Queue(maxsize=1024)
     sentinel = object()
-    # Sync-thread listener pushes to a thread-safe Queue. The async generator
-    # awaits items via run_in_executor (queue.get is blocking).
     closed = threading.Event()
 
     def _listener(payload: dict) -> None:
@@ -129,7 +186,6 @@ async def stream_events(request: Request) -> StreamingResponse:
     async def _gen():
         loop = asyncio.get_event_loop()
         try:
-            # Initial hello so the client knows the stream is open.
             yield "event: hello\ndata: {}\n\n"
             while True:
                 if await request.is_disconnected():
@@ -141,7 +197,6 @@ async def stream_events(request: Request) -> StreamingResponse:
                 if item is sentinel:
                     break
                 if item is None:
-                    # Heartbeat to keep proxies happy.
                     yield ": ping\n\n"
                     continue
                 event = item.get("event", "message")

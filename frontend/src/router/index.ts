@@ -16,6 +16,11 @@ const routes: RouteRecordRaw[] = [
     name: 'templates',
     component: () => import('@/views/PromptTemplatesView.vue'),
   },
+  {
+    path: '/providers',
+    name: 'providers',
+    component: () => import('@/views/ProvidersView.vue'),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 

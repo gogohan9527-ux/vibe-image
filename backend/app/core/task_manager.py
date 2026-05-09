@@ -23,6 +23,7 @@ import uuid
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional
 
 from ..config import AppConfig
@@ -35,6 +36,7 @@ from ..errors import (
     UpstreamError,
     VibeError,
 )
+from ..providers import PROVIDER_REGISTRY
 from .generator import GeneratorConfig, GeneratorTask, generate_image
 from .storage import Storage, utcnow_iso
 
@@ -77,13 +79,15 @@ class TaskInput:
     size: str
     quality: str
     format: str
+    provider_id: str
+    key_id: str
+    base_url: str
+    creds: dict[str, str]
     prompt_template_id: Optional[str] = None
     priority: bool = False
-    # Per-request overrides supplied by the frontend (decrypted upstream).
-    # When set, they replace ``config.api.api_key`` / ``config.api.base_url``
-    # for this specific task only and are never persisted.
-    api_key_override: Optional[str] = None
-    base_url_override: Optional[str] = None
+    # 2026-05-09 Addendum (II) — relative path (e.g. "temp/<sha1>.png") under
+    # ``images_dir``. None for plain text→image tasks.
+    input_image_path: Optional[str] = None
 
 
 @dataclass
@@ -165,6 +169,9 @@ class TaskManager:
                 "started_at": None,
                 "finished_at": None,
                 "priority": 1 if task_input.priority else 0,
+                "provider_id": task_input.provider_id,
+                "key_id": task_input.key_id,
+                "input_image_path": task_input.input_image_path,
             }
             self._storage.insert_task(row)
             if task_input.priority:
@@ -314,12 +321,29 @@ class TaskManager:
             {"event": "status", "task_id": task_id, "status": "running", "progress": 0}
         )
 
+        provider = PROVIDER_REGISTRY.get(task_input.provider_id)
+        if provider is None:
+            self._finalize_failed(
+                handle, f"unknown provider: {task_input.provider_id}"
+            )
+            return
+
         gen_config = GeneratorConfig(
-            base_url=task_input.base_url_override or self._config.api.base_url,
-            api_key=task_input.api_key_override or self._config.api.api_key,
-            request_timeout_seconds=self._config.api.request_timeout_seconds,
+            provider=provider,
+            creds=dict(task_input.creds),
+            base_url=task_input.base_url,
+            request_timeout_seconds=self._config.defaults.request_timeout_seconds,
             images_dir=self._config.images_dir,
         )
+        # img2img path: resolve the stored relative path (e.g. "temp/<sha1>.png")
+        # to an absolute Path under ``images_dir``. Validation already happened
+        # at the API boundary (api/tasks._resolve_task_input); the file may have
+        # been deleted between submit and run, in which case the provider will
+        # raise on read_bytes() and the failure will surface as ``upstream``.
+        input_image_abs: Optional[Path] = None
+        if task_input.input_image_path:
+            input_image_abs = self._config.images_dir / task_input.input_image_path
+
         gen_task = GeneratorTask(
             task_id=task_id,
             prompt=task_input.prompt,
@@ -327,6 +351,7 @@ class TaskManager:
             size=task_input.size,
             quality=task_input.quality,
             format=task_input.format,
+            input_image_path=input_image_abs,
         )
 
         def _on_progress(p: int) -> None:

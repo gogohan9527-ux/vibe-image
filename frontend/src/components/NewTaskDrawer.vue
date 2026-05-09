@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   ElDrawer,
   ElInput,
@@ -12,25 +13,30 @@ import {
   ElButton,
   ElMessage,
   ElIcon,
+  ElEmpty,
+  ElImage,
+  ElTooltip,
+  ElUpload,
 } from 'element-plus';
-import { Delete } from '@element-plus/icons-vue';
-import { ApiError, createTask, deletePrompt, listPrompts } from '@/api/client';
+import type { UploadFile, UploadRawFile } from 'element-plus';
+import { Delete, Picture } from '@element-plus/icons-vue';
+import { ApiError, createTask, deletePrompt, listPrompts, uploadTempImage } from '@/api/client';
 import { useTaskStore } from '@/stores/useTaskStore';
-import { useApiAuthStore } from '@/stores/useApiAuthStore';
-import { encryptApiKey, resetPublicKeyCache } from '@/services/crypto';
+import { useProviderStore } from '@/stores/useProviderStore';
+import ProviderPicker, { type PickerValue } from '@/components/ProviderPicker.vue';
 import type { CreateTaskRequest, PromptItem } from '@/types/api';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
 
-const store = useTaskStore();
-const auth = useApiAuthStore();
+const taskStore = useTaskStore();
+const providerStore = useProviderStore();
+const router = useRouter();
 
 type Quality = 'low' | 'medium' | 'high' | 'auto';
 
 const prompt = ref('');
 const selectedTemplateId = ref<string | null>(null);
-const model = ref('t8-/gpt-image-2');
 const quality = ref<Quality>('low');
 const ratio = ref<'1:1' | '16:9' | '9:16' | '4:3'>('1:1');
 const size = ref('1024x1024');
@@ -38,9 +44,60 @@ const count = ref(1);
 const priority = ref(false);
 const saveAsTemplate = ref(false);
 
+const picker = ref<PickerValue>({ provider_id: '', key_id: '', model: '' });
+
 const submitting = ref(false);
 const templates = ref<PromptItem[]>([]);
 const templatesLoading = ref(false);
+
+// img2img reference image (added 2026-05-09 II).
+interface InputImageState { path: string; url: string; name: string }
+const inputImage = ref<InputImageState | null>(null);
+const uploading = ref(false);
+
+const selectedProvider = computed(() =>
+  picker.value.provider_id
+    ? providerStore.providers.find((p) => p.id === picker.value.provider_id) ?? null
+    : null,
+);
+const supportsImage = computed<boolean>(() => selectedProvider.value?.supports_image_input ?? false);
+
+// If user switches to a provider that doesn't support image input, drop any
+// previously selected reference image so we don't accidentally submit it.
+watch(supportsImage, (next) => {
+  if (!next && inputImage.value) inputImage.value = null;
+});
+
+async function handleFileSelected(file: UploadFile): Promise<void> {
+  const raw = file.raw as UploadRawFile | undefined;
+  if (!raw) return;
+  // Element Plus's <el-upload> calls on-change for status transitions too; we
+  // only want the moment a fresh file is picked.
+  if (file.status !== 'ready' && file.status !== undefined) return;
+  uploading.value = true;
+  try {
+    const res = await uploadTempImage(raw);
+    inputImage.value = { path: res.input_image_path, url: res.url, name: raw.name };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.body.code === 'upload_too_large') {
+        ElMessage.error('文件超过大小上限（10 MiB）');
+      } else if (err.body.code === 'invalid_upload') {
+        ElMessage.error('仅支持 PNG / JPEG / WEBP 图片');
+      } else {
+        ElMessage.error(err.message || '上传失败');
+      }
+    } else {
+      ElMessage.error('上传失败');
+    }
+  } finally {
+    uploading.value = false;
+  }
+}
+
+function clearInputImage(): void {
+  inputImage.value = null;
+}
 
 const sizeOptions = computed<string[]>(() => {
   switch (ratio.value) {
@@ -58,11 +115,39 @@ const sizeOptions = computed<string[]>(() => {
 });
 
 watch(ratio, () => {
-  // Snap to first available size for the chosen ratio if current isn't valid
   if (!sizeOptions.value.includes(size.value)) {
     size.value = sizeOptions.value[0];
   }
 });
+
+// "No provider has any key" empty state — drives the empty-state CTA.
+const hasUsableProvider = computed<boolean>(() =>
+  providerStore.providers.some((p) => (providerStore.keysByProvider[p.id] ?? []).length > 0),
+);
+
+// Default-pick a usable provider when the drawer first opens, so the picker
+// is meaningful without making the user click around.
+watch(
+  () => props.open,
+  async (next) => {
+    if (!next) return;
+    void loadTemplates();
+    if (!providerStore.loaded) {
+      try {
+        await providerStore.bootstrap();
+      } catch {
+        // Surfaced via the empty state below
+      }
+    }
+    if (!picker.value.provider_id) {
+      const first = providerStore.providers.find(
+        (p) => (providerStore.keysByProvider[p.id] ?? []).length > 0,
+      );
+      if (first) picker.value = { ...picker.value, provider_id: first.id };
+    }
+  },
+  { immediate: true },
+);
 
 async function loadTemplates(): Promise<void> {
   templatesLoading.value = true;
@@ -75,14 +160,6 @@ async function loadTemplates(): Promise<void> {
     templatesLoading.value = false;
   }
 }
-
-watch(
-  () => props.open,
-  (next) => {
-    if (next) void loadTemplates();
-  },
-  { immediate: true },
-);
 
 watch(selectedTemplateId, (id) => {
   if (!id) return;
@@ -114,7 +191,22 @@ function reset(): void {
   count.value = 1;
   priority.value = false;
   saveAsTemplate.value = false;
+  inputImage.value = null;
 }
+
+function goToProviders(): void {
+  close();
+  void router.push('/providers');
+}
+
+const submitDisabled = computed<boolean>(
+  () =>
+    !hasUsableProvider.value
+    || !picker.value.provider_id
+    || !picker.value.key_id
+    || !picker.value.model
+    || prompt.value.trim().length === 0,
+);
 
 async function submit(): Promise<void> {
   const text = prompt.value.trim();
@@ -122,33 +214,28 @@ async function submit(): Promise<void> {
     ElMessage.warning('请填写提示词');
     return;
   }
+  if (!picker.value.provider_id || !picker.value.key_id || !picker.value.model) {
+    ElMessage.warning('请选择 Provider / Key / Model');
+    return;
+  }
   submitting.value = true;
   try {
     const payload: CreateTaskRequest = {
       prompt: text,
       prompt_template_id: selectedTemplateId.value,
-      model: model.value,
+      provider_id: picker.value.provider_id,
+      key_id: picker.value.key_id,
+      model: picker.value.model,
       quality: quality.value,
       size: size.value,
       n: count.value,
       priority: priority.value,
       save_as_template: saveAsTemplate.value || undefined,
+      input_image_path: inputImage.value?.path ?? undefined,
     };
 
-    if (auth.hasUserCredentials && auth.apiKey && auth.baseUrl) {
-      try {
-        payload.encrypted_api_key = await encryptApiKey(auth.apiKey);
-        payload.base_url = auth.baseUrl;
-      } catch (err) {
-        // Public key may have rotated (backend restart) — drop cache and retry once.
-        resetPublicKeyCache();
-        payload.encrypted_api_key = await encryptApiKey(auth.apiKey);
-        payload.base_url = auth.baseUrl;
-      }
-    }
-
     const res = await createTask(payload);
-    for (const t of res.tasks) store.upsert(t);
+    for (const t of res.tasks) taskStore.upsert(t);
     ElMessage.success(`已创建 ${res.tasks.length} 个任务`);
     reset();
     close();
@@ -159,12 +246,13 @@ async function submit(): Promise<void> {
         const qs = err.body.queue_size ?? 0;
         ElMessage.error(`队列已满 (${qs}/${cap})，请减少数量或稍后再试`);
       } else if (err.body.code === 'credential_decrypt_failed') {
-        // Backend restarted (rotated keypair) — clear in-memory creds and re-prompt.
-        resetPublicKeyCache();
-        auth.clear();
-        ElMessage.error('凭据失效（后端可能已重启），请重新填写');
-      } else if (err.body.code === 'api_key_missing') {
-        ElMessage.error('api_key 未配置，请先填写凭据');
+        ElMessage.error('凭据失效（后端可能已重启），请到 /providers 重新添加 Key');
+      } else if (err.body.code === 'provider_not_configured' || err.body.code === 'key_not_found') {
+        ElMessage.error(`${err.message}（请到 /providers 配置）`);
+      } else if (err.body.code === 'provider_capability_unsupported') {
+        ElMessage.error('当前 Provider 不支持图生图，请切换 Provider 或移除参考图');
+      } else if (err.body.code === 'input_image_not_found') {
+        ElMessage.error('参考图文件已失效，请重新上传');
       } else {
         ElMessage.error(err.message);
       }
@@ -192,7 +280,13 @@ async function submit(): Promise<void> {
         <p>填写提示词与参数，提交后即进入队列</p>
       </header>
 
-      <div class="form">
+      <div v-if="!hasUsableProvider" class="empty-wrap">
+        <ElEmpty description="尚未配置任何 Provider Key">
+          <ElButton type="primary" @click="goToProviders">去 /providers 配置插件</ElButton>
+        </ElEmpty>
+      </div>
+
+      <div v-else class="form">
         <div class="field">
           <label>1. 提示词</label>
           <ElInput
@@ -202,6 +296,49 @@ async function submit(): Promise<void> {
             placeholder="请输入您的提示词，描述您想生成的图片"
             resize="none"
           />
+        </div>
+
+        <div class="field">
+          <label>参考图（可选）</label>
+          <ElTooltip
+            :content="supportsImage ? '' : '当前 Provider 不支持图生图'"
+            :disabled="supportsImage"
+            placement="top"
+          >
+            <div class="upload-wrap">
+              <ElUpload
+                v-if="!inputImage"
+                :show-file-list="false"
+                :auto-upload="false"
+                :disabled="!supportsImage || uploading"
+                accept="image/png,image/jpeg,image/webp"
+                drag
+                :on-change="handleFileSelected"
+                class="ref-uploader"
+              >
+                <div class="upload-inner">
+                  <ElIcon :size="22" color="#94a3b8"><Picture /></ElIcon>
+                  <p class="upload-hint">
+                    {{ uploading ? '上传中…' : '点击或拖入图片（PNG / JPEG / WEBP，≤ 10 MiB）' }}
+                  </p>
+                </div>
+              </ElUpload>
+              <div v-else class="ref-preview">
+                <ElImage
+                  :src="inputImage.url"
+                  :preview-src-list="[inputImage.url]"
+                  fit="cover"
+                  preview-teleported
+                  hide-on-click-modal
+                  class="ref-thumb"
+                />
+                <div class="ref-meta">
+                  <span class="ref-name" :title="inputImage.name">{{ inputImage.name }}</span>
+                  <ElButton text type="danger" size="small" @click="clearInputImage">移除</ElButton>
+                </div>
+              </div>
+            </div>
+          </ElTooltip>
         </div>
 
         <div class="field">
@@ -236,10 +373,8 @@ async function submit(): Promise<void> {
         </div>
 
         <div class="field">
-          <label>2. 模型版本</label>
-          <ElSelect v-model="model">
-            <ElOption label="t8-/gpt-image-2" value="t8-/gpt-image-2" />
-          </ElSelect>
+          <label>2. 模型选择</label>
+          <ProviderPicker v-model="picker" />
         </div>
 
         <div class="field">
@@ -285,7 +420,14 @@ async function submit(): Promise<void> {
 
       <footer class="drawer-foot">
         <ElButton @click="close">取消</ElButton>
-        <ElButton type="primary" :loading="submitting" @click="submit">创建任务</ElButton>
+        <ElButton
+          type="primary"
+          :loading="submitting"
+          :disabled="submitDisabled"
+          @click="submit"
+        >
+          创建任务
+        </ElButton>
       </footer>
     </div>
   </ElDrawer>
@@ -313,6 +455,13 @@ async function submit(): Promise<void> {
   margin: 0;
   color: var(--vi-text-muted);
   font-size: 12px;
+}
+
+.empty-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .form {
@@ -394,5 +543,61 @@ async function submit(): Promise<void> {
   padding: 14px 24px;
   border-top: 1px solid var(--vi-border);
   background: #fff;
+}
+
+.upload-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.ref-uploader :deep(.el-upload-dragger) {
+  padding: 14px;
+}
+
+.upload-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.upload-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vi-text-muted);
+}
+
+.ref-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--vi-border);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.ref-thumb {
+  width: 96px;
+  height: 96px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ref-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ref-name {
+  font-size: 12px;
+  color: var(--vi-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

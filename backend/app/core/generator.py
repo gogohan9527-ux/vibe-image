@@ -1,4 +1,4 @@
-"""Image generator: thin wrapper around the upstream image API.
+"""Image generator: dispatches a Provider's HttpCall and saves the image.
 
 Phases reported via ``progress_cb``:
     0   queued (set by the manager before this runs)
@@ -9,11 +9,14 @@ Phases reported via ``progress_cb``:
 
 Cancellation: between phases the generator checks ``cancel_event.is_set()``
 and raises ``CancelledError`` if so.
+
+The generator no longer hardcodes the upstream payload — it asks the
+``Provider`` to produce an ``HttpCall``, dispatches it, and asks the same
+provider to parse the response into a ``ParsedResult``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import dataclass
@@ -22,7 +25,8 @@ from typing import Callable, Optional
 
 import requests
 
-from ..errors import CancelledError, UpstreamError
+from ..errors import CancelledError, ProviderCapabilityError, UpstreamError
+from ..providers.base import Provider
 
 
 logger = logging.getLogger(__name__)
@@ -36,12 +40,18 @@ class GeneratorTask:
     size: str
     quality: str
     format: str  # e.g. "jpeg", "png"
+    # 2026-05-09 Addendum (II) — when set, route through the provider's
+    # ``build_image_edit_request`` instead of ``build_request``.
+    input_image_path: Optional[Path] = None
 
 
 @dataclass
 class GeneratorConfig:
+    """Per-call configuration injected by ``TaskManager``."""
+
+    provider: Provider
+    creds: dict
     base_url: str
-    api_key: str
     request_timeout_seconds: int
     images_dir: Path
 
@@ -56,18 +66,6 @@ def _summary(text: str, n: int = 200) -> str:
     return text[:n] + ("..." if len(text) > n else "")
 
 
-def _extract_image_url(payload: dict) -> str:
-    data = payload.get("data") or []
-    if not data:
-        raise UpstreamError(
-            f"Upstream returned no data: {_summary(json.dumps(payload, ensure_ascii=False))}"
-        )
-    url = data[0].get("url")
-    if not url:
-        raise UpstreamError("Upstream response did not contain an image URL.")
-    return url
-
-
 def generate_image(
     task: GeneratorTask,
     config: GeneratorConfig,
@@ -79,11 +77,6 @@ def generate_image(
 
     Raises ``CancelledError`` if cancelled, ``UpstreamError`` for upstream
     failures.
-
-    ``metadata_cb`` (if provided) is called once with the parsed upstream
-    response dict on success. Callers may use it for best-effort metadata
-    extraction (e.g. ``revised_prompt`` for the task title). Errors raised
-    by the callback are logged and swallowed.
     """
 
     def _emit(p: int) -> None:
@@ -104,29 +97,50 @@ def generate_image(
     _check_cancel(cancel_event)
     _emit(10)
 
-    payload = json.dumps(
-        {
-            "model": task.model,
-            "prompt": task.prompt,
-            "n": 1,
-            "size": task.size,
-            "quality": task.quality,
-            "format": task.format,
-        }
-    )
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {config.api_key}",
-        "Content-Type": "application/json",
-    }
+    if task.input_image_path is not None:
+        # img2img path — provider must opt-in via ``supports_image_input``
+        # AND expose ``build_image_edit_request``. Otherwise reject early.
+        provider = config.provider
+        provider_id = getattr(provider, "id", "unknown")
+        if not getattr(provider, "supports_image_input", False) or not hasattr(
+            provider, "build_image_edit_request"
+        ):
+            raise ProviderCapabilityError(
+                provider_id=provider_id, capability="image_input"
+            )
+        call = provider.build_image_edit_request(
+            task=task,
+            creds=config.creds,
+            base_url=config.base_url,
+            model=task.model,
+        )
+    else:
+        call = config.provider.build_request(
+            task=task,
+            creds=config.creds,
+            base_url=config.base_url,
+            model=task.model,
+        )
 
     try:
-        resp = requests.post(
-            config.base_url,
-            headers=headers,
-            data=payload,
-            timeout=config.request_timeout_seconds,
-        )
+        if call.files is not None:
+            # multipart: do NOT pass json=. Let requests build the boundary.
+            resp = requests.request(
+                method=call.method,
+                url=call.url,
+                headers=call.headers,
+                files=call.files,
+                data=call.data,
+                timeout=config.request_timeout_seconds,
+            )
+        else:
+            resp = requests.request(
+                method=call.method,
+                url=call.url,
+                headers=call.headers,
+                json=call.json_body,
+                timeout=config.request_timeout_seconds,
+            )
     except requests.RequestException as exc:
         raise UpstreamError(f"Upstream request failed: {exc}") from exc
 
@@ -134,7 +148,7 @@ def generate_image(
         # Log status + summary, NEVER the Authorization header.
         logger.error(
             "Upstream %s returned %d: %s",
-            config.base_url,
+            call.url,
             resp.status_code,
             _summary(resp.text),
         )
@@ -149,8 +163,12 @@ def generate_image(
             f"Upstream returned non-JSON body: {_summary(resp.text)}"
         ) from exc
 
-    image_url = _extract_image_url(result)
+    parsed = config.provider.parse_response(result)
     _emit_metadata(result)
+
+    image_url = parsed.image_url
+    if not image_url:
+        raise UpstreamError("Upstream response did not contain an image URL.")
 
     _check_cancel(cancel_event)
     _emit(50)

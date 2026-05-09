@@ -12,23 +12,9 @@
 
 ### 准备配置
 
-复制配置模板并填入真实 api_key：
-
-Windows PowerShell 环境：
-
-```powershell
-Copy-Item config/config.example.yaml config/config.yaml
-# 编辑 config/config.yaml，把 api.api_key 改成真实 key
-```
-
-macOS / Linux shell 环境：
-
 ```sh
 cp config/config.example.yaml config/config.yaml
-# 编辑 config/config.yaml，把 api.api_key 改成真实 key
 ```
-
-`config/config.yaml` 已被 `.gitignore` 排除，绝不会被提交。
 
 ### 启动后端
 
@@ -95,48 +81,12 @@ npm install
 npm run dev
 ```
 
-默认打开 <http://localhost:5173>。三个页面：
-- `/` — 任务列表（实时 SSE 推送进度）
-- `/history` — 历史记录（搜索 / 筛选 / 分页 / 重新生成）
-- 侧边栏右下角的"设置"按钮 — 调整并发数与队列上限
-
 ### 构建生产包
 
 ```sh
 cd frontend
 npm run build
 ```
-
----
-
-## Frontend：新建任务的标题与模板
-
-### 任务标题（可选）
-
-在「新建任务」抽屉顶部新增了**标题**输入框（最多 60 字）：
-
-- **留空**：后端自动取 prompt 前 30 个字符作为标题兜底；若生成完成后响应中包含可用文本则自动回填。
-- **填写**：后端直接使用该标题，不再兜底替换。
-
-### 模板下拉
-
-打开「新建任务」抽屉时，模板下拉会自动从后端加载 `prompt_templates` 表的全部数据。选中模板后，提示词文本框自动填入该模板内容。
-
-### 保存为模板
-
-勾选「将本次提示词保存为模板」时：
-
-- 可选填「模板名称」（留空将取 prompt 前 40 字自动命名）。
-- 提交任务时，后端同步把该提示词写入 `prompt_templates` 表。
-- 下次打开新建任务抽屉，新模板即出现在下拉列表中。
-
-### 模板配置页
-
-侧边栏新增「模板配置」入口，点击进入 `/templates` 页面，支持：
-
-- **新建模板**：填写名称 + 内容，提交后立即生效。
-- **编辑模板**：修改已有模板的名称或内容。
-- **删除模板**：`el-popconfirm` 二次确认；内置示例模板（`sample`）删除按钮禁用。
 
 ---
 
@@ -155,9 +105,15 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-打开 http://localhost:8080 。
+### Demo 模式启动
 
-`api_key` 与 `base_url` **不需要**预先在 `config.yaml` 或 `.env` 里配置——服务端检测到缺失时，前端启动会弹窗要求填写，凭据仅保存在浏览器内存（刷新页面需重填，传输用 RSA 加密）。
+```sh
+VIBE_MODE=demo docker compose up -d --build           # Linux / macOS / WSL
+```
+
+```powershell
+$env:VIBE_MODE="demo"; docker compose up -d --build   # Windows PowerShell
+```
 
 ```sh
 docker compose logs -f backend     # 日志

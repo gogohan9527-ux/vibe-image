@@ -14,10 +14,17 @@ from fastapi.staticfiles import StaticFiles
 from .api import config as config_routes
 from .api import history as history_routes
 from .api import prompts as prompts_routes
+from .api import providers as providers_routes
 from .api import settings as settings_routes
 from .api import tasks as tasks_routes
+from .api import uploads as uploads_routes
 from .config import AppConfig, ConfigError, get_config
 from .core.crypto import CryptoManager
+from .core.provider_store import (
+    InMemoryProviderStore,
+    SqliteProviderStore,
+)
+from .core.secret_box import SecretBox
 from .core.storage import Storage
 from .core.task_manager import TaskManager
 from .errors import VibeError
@@ -35,18 +42,33 @@ def _configure_logging() -> None:
     )
 
 
+def _build_provider_store(config: AppConfig, storage: Storage):
+    """Pick a ProviderStore implementation based on ``config.mode``."""
+    if config.mode == "demo":
+        logger.info("provider_store: using InMemoryProviderStore (demo mode)")
+        return InMemoryProviderStore()
+    # Normal mode: AES-GCM at-rest. Resolve the master key from
+    # VIBE_SECRET_KEY env or data/master.key (auto-generated on first run).
+    master_key_path = config.database_path.parent / "master.key"
+    secret_box = SecretBox(key_file=master_key_path)
+    return SqliteProviderStore(conn=storage._conn, secret_box=secret_box)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     config: AppConfig = app.state.config
     storage = Storage(db_path=config.database_path, prompts_dir=config.prompts_dir)
     storage.mark_orphaned_running_as_failed()
     config.images_dir.mkdir(parents=True, exist_ok=True)
+    config.images_temp_dir.mkdir(parents=True, exist_ok=True)
 
     manager = TaskManager(storage=storage, config=config)
     crypto = CryptoManager()
+    provider_store = _build_provider_store(config, storage)
     app.state.storage = storage
     app.state.task_manager = manager
     app.state.crypto = crypto
+    app.state.provider_store = provider_store
     try:
         yield
     finally:
@@ -63,7 +85,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             print(str(exc), file=sys.stderr)
             sys.exit(1)
 
-    app = FastAPI(title="vibe-image", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title="vibe-image", version="0.2.0", lifespan=_lifespan)
     app.state.config = config
 
     app.add_middleware(
@@ -79,11 +101,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(settings_routes.router, prefix="/api")
     app.include_router(history_routes.router, prefix="/api")
     app.include_router(config_routes.router, prefix="/api")
+    app.include_router(providers_routes.router, prefix="/api")
+    app.include_router(uploads_routes.router, prefix="/api")
 
     # Static images. Mount AFTER routers so /api/* never gets shadowed.
-    # StaticFiles requires the directory to exist at mount time; lifespan
-    # creates it on startup, but create_app runs before lifespan so we
-    # ensure it here too.
     config.images_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/images",

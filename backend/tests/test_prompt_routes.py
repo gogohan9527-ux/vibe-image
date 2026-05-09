@@ -25,7 +25,23 @@ def client(app_config, monkeypatch):
 
     app = create_app(config=app_config)
     with TestClient(app) as c:
+        store = c.app.state.provider_store
+        meta = store.add_key("momo", "test", {"api_key": "sk-test-..."})
+        store.upsert_config("momo", base_url="https://example.invalid/v1")
+        c.test_provider_id = "momo"
+        c.test_key_id = meta.id
         yield c
+
+
+def _task_payload(client, **overrides):
+    body = {
+        "prompt": "a cat",
+        "provider_id": client.test_provider_id,
+        "key_id": client.test_key_id,
+        "model": "t8-/gpt-image-2",
+    }
+    body.update(overrides)
+    return body
 
 
 def test_put_prompt_updates_title_and_returns_200(client):
@@ -68,10 +84,11 @@ def test_put_prompt_not_found_returns_404(client):
 def test_post_task_with_save_as_template_writes_db(client):
     r = client.post(
         "/api/tasks",
-        json={
-            "prompt": "starry mountain at dusk",
-            "save_as_template": True,
-        },
+        json=_task_payload(
+            client,
+            prompt="starry mountain at dusk",
+            save_as_template=True,
+        ),
     )
     assert r.status_code == 201
     # Saved template appears in list_prompts with auto-derived title.
@@ -82,7 +99,7 @@ def test_post_task_with_save_as_template_writes_db(client):
 
 
 def test_post_task_returns_title_field(client):
-    r = client.post("/api/tasks", json={"prompt": "a happy fox"})
+    r = client.post("/api/tasks", json=_task_payload(client, prompt="a happy fox"))
     assert r.status_code == 201
     task = r.json()["tasks"][0]
     assert "title" in task
@@ -91,7 +108,7 @@ def test_post_task_returns_title_field(client):
 
 def test_post_task_title_truncated_at_30(client):
     long_prompt = "x" * 50
-    r = client.post("/api/tasks", json={"prompt": long_prompt})
+    r = client.post("/api/tasks", json=_task_payload(client, prompt=long_prompt))
     assert r.status_code == 201
     task = r.json()["tasks"][0]
     assert task["title"] == "x" * 30
