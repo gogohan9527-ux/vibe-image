@@ -11,11 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api import config as config_routes
 from .api import history as history_routes
 from .api import prompts as prompts_routes
 from .api import settings as settings_routes
 from .api import tasks as tasks_routes
 from .config import AppConfig, ConfigError, get_config
+from .core.crypto import CryptoManager
 from .core.storage import Storage
 from .core.task_manager import TaskManager
 from .errors import VibeError
@@ -41,8 +43,10 @@ async def _lifespan(app: FastAPI):
     config.images_dir.mkdir(parents=True, exist_ok=True)
 
     manager = TaskManager(storage=storage, config=config)
+    crypto = CryptoManager()
     app.state.storage = storage
     app.state.task_manager = manager
+    app.state.crypto = crypto
     try:
         yield
     finally:
@@ -74,6 +78,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(prompts_routes.router, prefix="/api")
     app.include_router(settings_routes.router, prefix="/api")
     app.include_router(history_routes.router, prefix="/api")
+    app.include_router(config_routes.router, prefix="/api")
 
     # Static images. Mount AFTER routers so /api/* never gets shadowed.
     # StaticFiles requires the directory to exist at mount time; lifespan

@@ -79,6 +79,11 @@ class TaskInput:
     format: str
     prompt_template_id: Optional[str] = None
     priority: bool = False
+    # Per-request overrides supplied by the frontend (decrypted upstream).
+    # When set, they replace ``config.api.api_key`` / ``config.api.base_url``
+    # for this specific task only and are never persisted.
+    api_key_override: Optional[str] = None
+    base_url_override: Optional[str] = None
 
 
 @dataclass
@@ -310,8 +315,8 @@ class TaskManager:
         )
 
         gen_config = GeneratorConfig(
-            base_url=self._config.api.base_url,
-            api_key=self._config.api.api_key,
+            base_url=task_input.base_url_override or self._config.api.base_url,
+            api_key=task_input.api_key_override or self._config.api.api_key,
             request_timeout_seconds=self._config.api.request_timeout_seconds,
             images_dir=self._config.images_dir,
         )

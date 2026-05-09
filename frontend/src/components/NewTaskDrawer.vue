@@ -16,12 +16,15 @@ import {
 import { Delete } from '@element-plus/icons-vue';
 import { ApiError, createTask, deletePrompt, listPrompts } from '@/api/client';
 import { useTaskStore } from '@/stores/useTaskStore';
+import { useApiAuthStore } from '@/stores/useApiAuthStore';
+import { encryptApiKey, resetPublicKeyCache } from '@/services/crypto';
 import type { CreateTaskRequest, PromptItem } from '@/types/api';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
 
 const store = useTaskStore();
+const auth = useApiAuthStore();
 
 type Quality = 'low' | 'medium' | 'high' | 'auto';
 
@@ -132,6 +135,18 @@ async function submit(): Promise<void> {
       save_as_template: saveAsTemplate.value || undefined,
     };
 
+    if (auth.hasUserCredentials && auth.apiKey && auth.baseUrl) {
+      try {
+        payload.encrypted_api_key = await encryptApiKey(auth.apiKey);
+        payload.base_url = auth.baseUrl;
+      } catch (err) {
+        // Public key may have rotated (backend restart) — drop cache and retry once.
+        resetPublicKeyCache();
+        payload.encrypted_api_key = await encryptApiKey(auth.apiKey);
+        payload.base_url = auth.baseUrl;
+      }
+    }
+
     const res = await createTask(payload);
     for (const t of res.tasks) store.upsert(t);
     ElMessage.success(`已创建 ${res.tasks.length} 个任务`);
@@ -143,6 +158,13 @@ async function submit(): Promise<void> {
         const cap = err.body.cap ?? 0;
         const qs = err.body.queue_size ?? 0;
         ElMessage.error(`队列已满 (${qs}/${cap})，请减少数量或稍后再试`);
+      } else if (err.body.code === 'credential_decrypt_failed') {
+        // Backend restarted (rotated keypair) — clear in-memory creds and re-prompt.
+        resetPublicKeyCache();
+        auth.clear();
+        ElMessage.error('凭据失效（后端可能已重启），请重新填写');
+      } else if (err.body.code === 'api_key_missing') {
+        ElMessage.error('api_key 未配置，请先填写凭据');
       } else {
         ElMessage.error(err.message);
       }

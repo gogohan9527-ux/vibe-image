@@ -57,6 +57,17 @@ export interface CreateTaskRequest {
   format?: string | null;
   n?: number;
   priority?: boolean;
+  encrypted_api_key?: string;
+  base_url?: string;
+}
+
+export interface ConfigStatus {
+  api_key_configured: boolean;
+  base_url: string;
+}
+
+export interface PublicKeyResponse {
+  public_key_pem: string;
 }
 
 export interface CreateTaskResponse {

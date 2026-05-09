@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: vibe-backend
+    restart: unless-stopped
+    environment:
+      VIBE_API_KEY: ${VIBE_API_KEY:-}
+      VIBE_BASE_URL: ${VIBE_BASE_URL:-}
+    volumes:
+      - ${VIBE_CONFIG_DIR:-./config}:/app/config
+      - ${VIBE_DATA_DIR:-./data}:/app/data
+      - ${VIBE_IMAGES_DIR:-./images}:/app/images
+      - ${VIBE_PROMPT_DIR:-./prompt}:/app/prompt
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: vibe-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend

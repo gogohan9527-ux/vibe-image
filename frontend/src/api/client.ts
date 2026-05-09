@@ -1,5 +1,6 @@
 import type {
   CancelTaskResponse,
+  ConfigStatus,
   CreatePromptRequest,
   CreateTaskRequest,
   CreateTaskResponse,
@@ -9,6 +10,7 @@ import type {
   ListPromptsResponse,
   ListTasksResponse,
   PromptItem,
+  PublicKeyResponse,
   Settings,
   TaskItem,
   UpdatePromptRequest,
@@ -133,4 +135,13 @@ export function listHistory(query: HistoryQuery = {}): Promise<HistoryListRespon
 
 export function deleteHistory(taskId: string): Promise<void> {
   return request<void>('DELETE', `/api/history/${encodeURIComponent(taskId)}`);
+}
+
+// --- Config / runtime credentials ---
+export function getConfigStatus(): Promise<ConfigStatus> {
+  return request<ConfigStatus>('GET', '/api/config/status');
+}
+
+export function getPublicKey(): Promise<PublicKeyResponse> {
+  return request<PublicKeyResponse>('GET', '/api/config/public-key');
 }

@@ -12,8 +12,10 @@ from fastapi import APIRouter, Path, Request
 from fastapi.responses import StreamingResponse
 
 from ..config import AppConfig
+from ..core.crypto import CryptoManager
 from ..core.storage import Storage
 from ..core.task_manager import TaskInput, TaskManager
+from ..errors import MissingApiKeyError
 from ..schemas import (
     TaskCancelResponse,
     TaskCreateRequest,
@@ -26,7 +28,21 @@ from ..schemas import (
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-def _resolve_task_input(req: TaskCreateRequest, config: AppConfig) -> TaskInput:
+def _resolve_task_input(
+    req: TaskCreateRequest,
+    config: AppConfig,
+    crypto: CryptoManager,
+) -> TaskInput:
+    api_key_override: str | None = None
+    if req.encrypted_api_key:
+        api_key_override = crypto.decrypt(req.encrypted_api_key)
+
+    effective_api_key = api_key_override or config.api.api_key
+    if not effective_api_key:
+        raise MissingApiKeyError(
+            "api_key not configured on server and no credential supplied with request"
+        )
+
     return TaskInput(
         prompt=req.prompt,
         model=req.model or config.api.default_model,
@@ -35,6 +51,8 @@ def _resolve_task_input(req: TaskCreateRequest, config: AppConfig) -> TaskInput:
         format=req.format or config.api.default_format,
         prompt_template_id=req.prompt_template_id,
         priority=req.priority,
+        api_key_override=api_key_override,
+        base_url_override=req.base_url,
     )
 
 
@@ -43,13 +61,14 @@ def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse
     config: AppConfig = request.app.state.config
     manager: TaskManager = request.app.state.task_manager
     storage: Storage = request.app.state.storage
+    crypto: CryptoManager = request.app.state.crypto
 
     # Optionally save the prompt as a template (title auto-derived from first 30 chars).
     if req.save_as_template:
         storage.save_prompt(title=req.prompt[:30], prompt=req.prompt)
 
     rows: List[dict] = []
-    base_input = _resolve_task_input(req, config)
+    base_input = _resolve_task_input(req, config, crypto)
     for _ in range(req.n):
         row = manager.submit(base_input)
         rows.append(row)

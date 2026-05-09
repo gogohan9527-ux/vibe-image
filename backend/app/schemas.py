@@ -31,6 +31,11 @@ class TaskCreateRequest(BaseModel):
     format: Optional[str] = None
     n: int = Field(default=1, ge=1, le=50)
     priority: bool = False
+    # Optional runtime credentials supplied by the frontend when the server
+    # has no api_key configured. ``encrypted_api_key`` is base64 RSA-OAEP
+    # ciphertext using the public key from ``GET /api/config/public-key``.
+    encrypted_api_key: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class TaskItem(BaseModel):

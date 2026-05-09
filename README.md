@@ -137,3 +137,30 @@ npm run build
 - **新建模板**：填写名称 + 内容，提交后立即生效。
 - **编辑模板**：修改已有模板的名称或内容。
 - **删除模板**：`el-popconfirm` 二次确认；内置示例模板（`sample`）删除按钮禁用。
+
+---
+
+## Docker Compose 部署
+
+### 准备配置 (可选)
+
+```sh 
+cp config/config.example.yaml config/config.yaml
+cp .env.example .env
+```
+
+### 启动
+
+```sh
+docker compose up -d --build
+```
+
+打开 http://localhost:8080 。
+
+`api_key` 与 `base_url` **不需要**预先在 `config.yaml` 或 `.env` 里配置——服务端检测到缺失时，前端启动会弹窗要求填写，凭据仅保存在浏览器内存（刷新页面需重填，传输用 RSA 加密）。
+
+```sh
+docker compose logs -f backend     # 日志
+docker compose down                # 停止
+docker compose up -d --build       # 重建
+```

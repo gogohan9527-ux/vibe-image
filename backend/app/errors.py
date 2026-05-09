@@ -76,3 +76,13 @@ class CancelledError(VibeError):
 class UpstreamError(VibeError):
     code = "upstream_error"
     http_status = 502
+
+
+class CredentialDecryptError(VibeError):
+    code = "credential_decrypt_failed"
+    http_status = 400
+
+
+class MissingApiKeyError(VibeError):
+    code = "api_key_missing"
+    http_status = 400

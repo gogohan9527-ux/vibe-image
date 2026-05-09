@@ -75,7 +75,13 @@ class Storage:
             str(self.db_path), check_same_thread=False, isolation_level=None
         )
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL;")
+        # WAL mode requires shared-memory mmap, which Docker Desktop's Windows
+        # bind mounts (9P/virtiofs) do not support — falling back to the
+        # default rollback journal is safe for our single-process workload.
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+        except sqlite3.OperationalError as exc:
+            logger.warning("WAL journal mode unavailable (%s); using default rollback journal", exc)
         self._conn.execute("PRAGMA foreign_keys=ON;")
 
     # ---------- Initialization ----------

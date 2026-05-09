@@ -1,17 +1,26 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { ElMessage } from 'element-plus';
 import AppSidebar from '@/components/AppSidebar.vue';
 import NewTaskDrawer from '@/components/NewTaskDrawer.vue';
 import SettingsDialog from '@/components/SettingsDialog.vue';
+import ApiCredentialsDialog from '@/components/ApiCredentialsDialog.vue';
 import { useTaskStream } from '@/composables/useTaskStream';
+import { useApiAuthStore } from '@/stores/useApiAuthStore';
 
 const newTaskOpen = ref(false);
 const settingsOpen = ref(false);
 
+const auth = useApiAuthStore();
 const { open: openStream, close: closeStream } = useTaskStream();
 
-onMounted(() => {
+onMounted(async () => {
   openStream();
+  try {
+    await auth.loadStatus();
+  } catch {
+    ElMessage.error('无法获取后端配置状态，请检查后端是否已启动');
+  }
 });
 onBeforeUnmount(() => {
   closeStream();
@@ -26,6 +35,7 @@ onBeforeUnmount(() => {
     </main>
     <NewTaskDrawer v-model:open="newTaskOpen" />
     <SettingsDialog v-model:open="settingsOpen" />
+    <ApiCredentialsDialog />
   </div>
 </template>
 

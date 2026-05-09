@@ -8,6 +8,7 @@ The api_key is never logged or surfaced in error messages.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import List
@@ -23,7 +24,7 @@ CONFIG_PATH: Path = PROJECT_ROOT / "config" / "config.yaml"
 
 class ApiConfig(BaseModel):
     base_url: str
-    api_key: str
+    api_key: str = ""
     default_model: str
     default_size: str
     default_quality: str
@@ -32,9 +33,12 @@ class ApiConfig(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def _api_key_not_placeholder(cls, v: str) -> str:
-        if not v or v.strip() == "" or v.strip() == "REPLACE_ME":
-            raise ValueError("api_key is not configured (still REPLACE_ME)")
+    def _normalize_api_key(cls, v: str) -> str:
+        # An empty / placeholder value means "not configured at server level".
+        # The runtime falls back to env var (VIBE_API_KEY) and finally to a
+        # per-request value supplied by the frontend.
+        if not v or v.strip() in ("", "REPLACE_ME"):
+            return ""
         return v
 
 
@@ -115,6 +119,15 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ConfigError(f"Config file is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("Config file must be a YAML mapping at the top level.")
+
+    # Environment variables override yaml api fields (Docker / CI injection).
+    env_api_key = os.environ.get("VIBE_API_KEY")
+    if env_api_key:
+        raw.setdefault("api", {})["api_key"] = env_api_key
+    env_base_url = os.environ.get("VIBE_BASE_URL")
+    if env_base_url:
+        raw.setdefault("api", {})["base_url"] = env_base_url
+
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:
