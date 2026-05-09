@@ -24,5 +24,8 @@ services:
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8080}:80"
+      - "${FRONTEND_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ${VIBE_CERTS_DIR:-./docker/certs}:/etc/nginx/certs:ro
     depends_on:
       - backend
