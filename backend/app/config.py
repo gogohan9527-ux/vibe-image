@@ -1,9 +1,11 @@
 """Configuration loading and validation.
 
-Loads ``config/config.yaml`` from the project root, validates with Pydantic,
-and exposes a cached ``get_config()`` for the rest of the app.
+Loads ``config/config.yaml`` from the project root, overlays ``VIBE_*``
+environment variables (per :mod:`app.config_layers`), validates with
+Pydantic, and exposes a cached ``get_config()`` for the rest of the app.
 
-The api_key is never logged or surfaced in error messages.
+As of 2026-05-09 the legacy ``api:`` section is gone — credentials and
+upstream URLs live in the ProviderStore (managed at runtime via the UI).
 """
 
 from __future__ import annotations
@@ -11,35 +13,17 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError
+
+from .config_layers import apply_env_overrides
 
 
 # Project root = three levels above this file: backend/app/config.py -> repo root.
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 CONFIG_PATH: Path = PROJECT_ROOT / "config" / "config.yaml"
-
-
-class ApiConfig(BaseModel):
-    base_url: str
-    api_key: str = ""
-    default_model: str
-    default_size: str
-    default_quality: str
-    default_format: str
-    request_timeout_seconds: int = Field(gt=0)
-
-    @field_validator("api_key")
-    @classmethod
-    def _normalize_api_key(cls, v: str) -> str:
-        # An empty / placeholder value means "not configured at server level".
-        # The runtime falls back to env var (VIBE_API_KEY) and finally to a
-        # per-request value supplied by the frontend.
-        if not v or v.strip() in ("", "REPLACE_ME"):
-            return ""
-        return v
 
 
 class ServerConfig(BaseModel):
@@ -54,11 +38,6 @@ class ExecutorConfig(BaseModel):
     max_concurrency: int = Field(gt=0)
     max_queue_size: int = Field(gt=0)
 
-    @field_validator("default_concurrency")
-    @classmethod
-    def _default_concurrency_not_negative(cls, v: int) -> int:
-        return v
-
 
 class PathsConfig(BaseModel):
     images_dir: str
@@ -66,11 +45,19 @@ class PathsConfig(BaseModel):
     database_path: str
 
 
+class DefaultsConfig(BaseModel):
+    request_timeout_seconds: int = Field(default=120, gt=0)
+    # Cap for img2img reference-image uploads; see PRD §B.4 Addendum (II).
+    max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+
+
 class AppConfig(BaseModel):
-    api: ApiConfig
+    mode: Literal["normal", "demo"] = "normal"
+    secret_key: Optional[str] = None
     server: ServerConfig
     executor: ExecutorConfig
     paths: PathsConfig
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
 
     def resolve_path(self, relative_or_absolute: str) -> Path:
         """Resolve a path from config relative to the project root."""
@@ -82,6 +69,11 @@ class AppConfig(BaseModel):
     @property
     def images_dir(self) -> Path:
         return self.resolve_path(self.paths.images_dir)
+
+    @property
+    def images_temp_dir(self) -> Path:
+        """Sub-directory under ``images_dir`` for img2img reference uploads."""
+        return self.images_dir / "temp"
 
     @property
     def prompts_dir(self) -> Path:
@@ -111,25 +103,25 @@ def load_config(path: Path | None = None) -> AppConfig:
     if not cfg_path.exists():
         raise ConfigError(
             f"Config file not found at {cfg_path}. "
-            "Copy config/config.example.yaml to config/config.yaml and fill in api_key."
+            "Copy config/config.example.yaml to config/config.yaml."
         )
     try:
         raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ConfigError(f"Config file is not valid YAML: {exc}") from exc
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         raise ConfigError("Config file must be a YAML mapping at the top level.")
 
-    # Environment variables override yaml api fields (Docker / CI injection).
-    env_api_key = os.environ.get("VIBE_API_KEY")
-    if env_api_key:
-        raw.setdefault("api", {})["api_key"] = env_api_key
-    env_base_url = os.environ.get("VIBE_BASE_URL")
-    if env_base_url:
-        raw.setdefault("api", {})["base_url"] = env_base_url
+    # Drop the legacy ``api:`` section silently if present. This is a one-shot
+    # migration aid — users see a UI prompt to configure providers instead.
+    raw.pop("api", None)
+
+    overlaid = apply_env_overrides(raw, os.environ)
 
     try:
-        return AppConfig.model_validate(raw)
+        return AppConfig.model_validate(overlaid)
     except ValidationError as exc:
         raise ConfigError(_format_validation_error(exc)) from exc
 

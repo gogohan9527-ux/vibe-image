@@ -45,7 +45,26 @@ def client(app_config, monkeypatch):
 
     app = create_app(config=app_config)
     with TestClient(app) as c:
+        # Seed an InMemory key so tests can submit tasks without going through
+        # the encrypted-credential flow. We bypass the API and write directly
+        # to the store the lifespan attached to app.state.
+        store = c.app.state.provider_store
+        meta = store.add_key("momo", "test", {"api_key": "sk-test-..."})
+        store.upsert_config("momo", base_url="https://example.invalid/v1")
+        c.test_provider_id = "momo"
+        c.test_key_id = meta.id
         yield c
+
+
+def _task_payload(client: TestClient, **overrides) -> dict:
+    body = {
+        "prompt": "a cat",
+        "provider_id": getattr(client, "test_provider_id", "momo"),
+        "key_id": getattr(client, "test_key_id", "missing"),
+        "model": "t8-/gpt-image-2",
+    }
+    body.update(overrides)
+    return body
 
 
 def _wait_for_status(client: TestClient, task_id: str, target: str, timeout=5.0) -> Optional[dict]:
@@ -65,10 +84,7 @@ def test_health(client):
 
 
 def test_create_and_list_task(client):
-    r = client.post(
-        "/api/tasks",
-        json={"prompt": "a cat", "n": 1},
-    )
+    r = client.post("/api/tasks", json=_task_payload(client, prompt="a cat", n=1))
     assert r.status_code == 201
     body = r.json()
     assert len(body["tasks"]) == 1
@@ -81,7 +97,7 @@ def test_create_and_list_task(client):
 
 
 def test_create_n_creates_multiple(client):
-    r = client.post("/api/tasks", json={"prompt": "many", "n": 3})
+    r = client.post("/api/tasks", json=_task_payload(client, prompt="many", n=3))
     assert r.status_code == 201
     assert len(r.json()["tasks"]) == 3
 
@@ -90,8 +106,8 @@ def test_cancel_pending_task(client, app_config):
     # Lower concurrency to 1 to force queueing.
     client.put("/api/settings", json={"concurrency": 1})
     # Submit two; the second should be queued.
-    r1 = client.post("/api/tasks", json={"prompt": "first"})
-    r2 = client.post("/api/tasks", json={"prompt": "second"})
+    client.post("/api/tasks", json=_task_payload(client, prompt="first"))
+    r2 = client.post("/api/tasks", json=_task_payload(client, prompt="second"))
     second_id = r2.json()["tasks"][0]["id"]
 
     # Cancel the second while still pending.
@@ -102,9 +118,9 @@ def test_cancel_pending_task(client, app_config):
 
 def test_queue_full_returns_429(client, app_config):
     client.put("/api/settings", json={"concurrency": 1, "queue_cap": 2})
-    client.post("/api/tasks", json={"prompt": "a"})
-    client.post("/api/tasks", json={"prompt": "b"})
-    r = client.post("/api/tasks", json={"prompt": "c"})
+    client.post("/api/tasks", json=_task_payload(client, prompt="a"))
+    client.post("/api/tasks", json=_task_payload(client, prompt="b"))
+    r = client.post("/api/tasks", json=_task_payload(client, prompt="c"))
     assert r.status_code == 429
     body = r.json()
     assert body["code"] == "queue_full"
@@ -156,7 +172,7 @@ def test_prompts_crud(client):
 
 def test_history_pagination(client):
     for i in range(3):
-        client.post("/api/tasks", json={"prompt": f"history-{i}"})
+        client.post("/api/tasks", json=_task_payload(client, prompt=f"history-{i}"))
     # Wait for completion.
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -198,6 +214,9 @@ def _insert_fake_task(
         "started_at": utcnow_iso(),
         "finished_at": utcnow_iso() if status not in ("queued", "running", "cancelling") else None,
         "priority": 0,
+        "title": None,
+        "provider_id": None,
+        "key_id": None,
     }
     storage.insert_task(row)
 

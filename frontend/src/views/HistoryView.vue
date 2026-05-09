@@ -13,9 +13,10 @@ import {
   ElMessage,
   ElTooltip,
 } from 'element-plus';
-import { Search, Download, RefreshLeft, Picture, Delete } from '@element-plus/icons-vue';
+import { Search, Download, RefreshLeft, Delete, CopyDocument, WarningFilled } from '@element-plus/icons-vue';
 import { ElMessageBox } from 'element-plus';
 import { ApiError, createTask, deleteHistory, listHistory } from '@/api/client';
+import PreviewImage from '@/components/PreviewImage.vue';
 import type { CreateTaskRequest, HistoryStatusFilter, TaskItem } from '@/types/api';
 import { useTaskStore } from '@/stores/useTaskStore';
 import { formatDateTime } from '@/utils/format';
@@ -102,10 +103,16 @@ function narrowQuality(q: string): CreateTaskRequest['quality'] {
 }
 
 async function onRegenerate(row: TaskItem): Promise<void> {
+  if (!row.provider_id || !row.key_id) {
+    ElMessage.warning('该任务为旧版记录（无 provider/key 绑定），请到新建任务抽屉手动重新发起');
+    return;
+  }
   try {
     const res = await createTask({
       prompt: row.prompt,
       prompt_template_id: row.prompt_template_id,
+      provider_id: row.provider_id,
+      key_id: row.key_id,
       model: row.model,
       size: row.size,
       quality: narrowQuality(row.quality),
@@ -161,6 +168,20 @@ async function onDelete(row: TaskItem): Promise<void> {
 }
 
 const totalForPager = computed(() => total.value);
+
+async function copyError(msg: string | null): Promise<void> {
+  if (!msg) return;
+  try {
+    await navigator.clipboard.writeText(msg);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.error('复制失败');
+  }
+}
+
+function isLegacy(row: TaskItem): boolean {
+  return row.provider_id == null;
+}
 </script>
 
 <template>
@@ -192,11 +213,19 @@ const totalForPager = computed(() => total.value);
 
     <div class="table-wrap">
       <ElTable :data="items" v-loading="loading" stripe style="width: 100%" row-key="id">
+        <ElTableColumn label="输入图" width="64" align="center">
+          <template #default="{ row }: { row: TaskItem }">
+            <div v-if="row.input_image_url" class="input-thumb">
+              <PreviewImage :src="row.input_image_url" alt="input" />
+            </div>
+            <span v-else class="muted">—</span>
+          </template>
+        </ElTableColumn>
+
         <ElTableColumn label="缩略图" width="120">
           <template #default="{ row }: { row: TaskItem }">
             <div class="thumb">
-              <img v-if="row.image_url" :src="row.image_url" alt="thumbnail" />
-              <ElIcon v-else color="#cbd5e1" :size="20"><Picture /></ElIcon>
+              <PreviewImage :src="row.image_url" alt="thumbnail" />
             </div>
           </template>
         </ElTableColumn>
@@ -209,7 +238,21 @@ const totalForPager = computed(() => total.value);
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="模型版本" prop="model" width="160" />
+        <ElTableColumn label="模型版本" width="180">
+          <template #default="{ row }: { row: TaskItem }">
+            <span class="model-cell">{{ row.model }}</span>
+            <ElTag
+              v-if="isLegacy(row)"
+              size="small"
+              type="info"
+              effect="plain"
+              round
+              class="legacy-tag"
+            >
+              legacy
+            </ElTag>
+          </template>
+        </ElTableColumn>
 
         <ElTableColumn label="尺寸" width="120">
           <template #default="{ row }: { row: TaskItem }">
@@ -228,6 +271,33 @@ const totalForPager = computed(() => total.value);
             <ElTag size="small" :type="statusMeta(row.status).type" effect="light" round>
               {{ statusMeta(row.status).label }}
             </ElTag>
+          </template>
+        </ElTableColumn>
+
+        <ElTableColumn label="错误信息" width="220">
+          <template #default="{ row }: { row: TaskItem }">
+            <div v-if="row.status === 'failed'" class="err-cell">
+              <ElIcon class="err-icon" color="#ef4444"><WarningFilled /></ElIcon>
+              <ElTooltip
+                v-if="row.error_message"
+                :content="row.error_message"
+                placement="top"
+                :show-after="300"
+              >
+                <span class="err-text">{{ row.error_message }}</span>
+              </ElTooltip>
+              <span v-else class="err-empty">无错误描述</span>
+              <button
+                v-if="row.error_message"
+                type="button"
+                class="err-copy"
+                title="复制错误信息"
+                @click="copyError(row.error_message)"
+              >
+                <ElIcon><CopyDocument /></ElIcon>
+              </button>
+            </div>
+            <span v-else class="err-dash">—</span>
           </template>
         </ElTableColumn>
 
@@ -322,10 +392,19 @@ const totalForPager = computed(() => total.value);
   place-items: center;
 }
 
-.thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.input-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f3f8;
+  border: 1px solid var(--vi-border);
+  margin: 0 auto;
+}
+
+.muted {
+  color: var(--vi-text-faint);
+  font-size: 13px;
 }
 
 .cell-prompt {
@@ -348,5 +427,60 @@ const totalForPager = computed(() => total.value);
   display: flex;
   justify-content: flex-end;
   padding: 4px 0 24px;
+}
+
+.model-cell {
+  font-size: 13px;
+}
+
+.legacy-tag {
+  margin-left: 6px;
+}
+
+.err-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #ef4444;
+  min-width: 0;
+}
+
+.err-icon {
+  flex-shrink: 0;
+}
+
+.err-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.err-empty {
+  flex: 1;
+  color: var(--vi-text-faint);
+}
+
+.err-copy {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--vi-text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: inline-flex;
+}
+
+.err-copy:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.err-dash {
+  color: var(--vi-text-faint);
+  font-size: 13px;
 }
 </style>

@@ -21,6 +21,8 @@
 
 ### 1.1 `POST /api/tasks` — 创建一个或多个任务
 
+**[已弃用 / DEPRECATED at 2026-05-09 — 请使用下方 v2 (§10.2)]** 旧版本通过请求体直接传 `encrypted_api_key` / `base_url`。自 2026-05-09 起改为 `provider_id` + `key_id` + `model`，凭据由后端 Provider 仓储集中管理。下方旧定义保留以备查 / 历史日志比对。
+
 请求体：
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -406,3 +408,659 @@ curl -X DELETE http://127.0.0.1:8000/api/history/4c2b1e8a-0000-0000-0000-0000000
 | DELETE | `/api/history/{task_id}` |
 | GET | `/api/health` |
 | GET | `/images/{filename}` *(StaticFiles 挂载，详见 §2)* |
+
+> 自 2026-05-09 起新增 7 条 `/api/providers/*`、改动 `POST /api/tasks` 与 `GET /api/config/status`，详见 §10。
+> 自 2026-05-08 起新增 `PUT /api/prompts/{id}` 与 `POST /api/tasks` 的 `title` 字段，详见下方 §9.5 Addendum。
+
+### 9.5 2026-05-08 Addendum — Prompts CRUD + Task title
+
+> 本节是 prompt-template-db 这一轮的接口增量；§3 / §1.1 / §10 仍是基础定义，本节仅补充新增 / 改动。
+
+#### 9.5.1 [NEW] `PUT /api/prompts/{prompt_id}`
+
+部分更新一条模板的 `name` / `content`。两者皆为可选，但至少要传一个。
+
+请求体：
+```json
+{ "name": "moonlit forest v2", "content": "moonlit forest with fireflies and a moon" }
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | `string` | 否 | 提供时 `min_length=1, max_length=120` |
+| `content` | `string` | 否 | 提供时 `min_length=1` |
+
+响应 `200`：更新后的完整 `PromptItem`（schema 同 §3.2）。
+
+错误：
+
+| 状态 | code | 触发条件 |
+|------|------|----------|
+| 400 | `prompt_update_invalid` | `name` / `content` 都未传（或都为 null） |
+| 404 | `prompt_not_found` | `prompt_id` 在 DB 中不存在 |
+| 422 | (FastAPI 校验) | 提供了字段但为空字符串 |
+
+#### 9.5.2 [CHANGED] `POST /api/tasks` — 新增可选字段 `title`
+
+在 §1.1（v1）请求体之上新增（v2 §10.2 同样适用，无冲突）：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| `title` | `string \| null` | 否 | `null` | 任务标题；trim 后非空才算用户提供。空 / null / 全空白 → 后端兜底 `prompt[:30]`。最大长度建议 60（前端 maxlength 控制）。 |
+
+后端 `task_manager.submit()` 的 title 计算：
+- 用户提供 → 直接用，并设内部「title 已锁定」标志位。
+- 用户未提供 → `prompt_text.strip()[:30]` 兜底；标志「未锁定」。
+- generator 完成路径若响应字段含 `revised_prompt` 等可用文本，且 title 未锁定 → `text[:30]` 覆盖兜底。
+
+#### 9.5.3 [CHANGED] `TaskItem` — 新增 `title` 字段
+
+在所有列出（§1.2 / §1.3 / §5.1）与 history 路径中，`TaskItem` 多一个字段：
+
+| 字段 | 类型 | 备注 |
+|------|------|------|
+| `title` | `string \| null` | 旧 task 行（feature 上线前已存在）此字段为 `null`，前端容忍即可 |
+
+> 注：SSE `terminal` 事件载荷**不**携带 `title`。前端如需最新 title，请通过 `GET /api/tasks/{id}` 或 `GET /api/history` 查询。
+
+#### 9.5.4 错误码增量
+
+| HTTP | code | 端点 | 触发条件 |
+|------|------|------|---------|
+| 400 | `prompt_update_invalid` | `PUT /api/prompts/{id}` | 请求体两个字段都为空 |
+
+#### 9.5.5 兼容性
+
+- 既有不传 `title` 的请求**完全不受影响**——后端走兜底分支，行为可预测（`prompt[:30]`）。
+- 旧任务（DB 升级前已落库）`title` 列为 NULL，前端按缺省渲染。
+- `GET/POST/DELETE /api/prompts` 路径不变；后端将存储从 JSON 文件换成 `prompt_templates` 表对前端透明。
+
+---
+
+## 10. 2026-05-09 Addendum — Providers + Mode + Tasks v2
+
+> 本节是 plugin-providers-mode-config 这一轮的接口增量，由 `docs/interface.draft.md`（已合入并删除）合并而来。
+>
+> §10 内的端点定义优先于上文同名/同路径的旧定义。冲突时旧定义在原位标 `[已弃用 / DEPRECATED]`，新定义放本节并打 `[v2 — 自 2026-05-09]` 前缀。
+>
+> 错误响应仍统一形如 `{ "code": "...", "message": "...", ...optional fields }`。
+
+### 10.0 通用约定补充
+
+#### 10.0.1 凭据传输
+
+- 通过既有 `GET /api/config/public-key` 获取 RSA-2048 OAEP-SHA256 公钥（PEM, SubjectPublicKeyInfo）。
+- 前端 `crypto.ts` 新增 `encryptObject(obj: Record<string,string>) -> Record<string,string>`：对每个 value 调用现有 `encryptApiKey` (RSA-OAEP) 得到 base64 ciphertext，组合为同 key 名称的 dict。
+- 后端 `crypto.py::CryptoManager.decrypt_dict(payload)` 逐 value 解密为明文 dict，仅在 `add_key` 流程内消费、用完即弃，绝不落日志、错误信息、响应体。
+- 后端进程重启会换新 RSA 公私钥；前端发现 `/api/config/public-key` 返回的 PEM 与缓存不同，应清掉本地的 ciphertext 缓存（如果有）。
+
+#### 10.0.2 启动模式 (mode)
+
+- 启动模式由 `GET /api/config/status`（详见 §10.4）的 `mode` 字段返回（`"normal"` 或 `"demo"`）。前端不再询问 `api_key_configured` —— 该字段已删除。
+
+---
+
+### 10.1 Providers (新增模块)
+
+#### 10.1.1 [NEW] `GET /api/providers`
+
+列出所有内置 Provider 的元数据 + 当前配置摘要。本期始终包含且仅包含 `momo`。
+
+**响应 200**：
+```json
+{
+  "providers": [
+    {
+      "id": "momo",
+      "display_name": "MOMO",
+      "default_base_url": "https://momoapi.top/v1",
+      "credential_fields": [
+        { "name": "api_key", "label": "API Key", "secret": true, "required": true }
+      ],
+      "config": {
+        "base_url": "https://momoapi.top/v1",
+        "default_model": "t8-/gpt-image-2",
+        "default_key_id": "abc-123-..."
+      },
+      "key_count": 1
+    }
+  ]
+}
+```
+
+`config` 在用户从未编辑该 Provider 时为 `null`；前端在 `null` 情况下应使用 `default_base_url` 作为 placeholder。
+
+curl：`curl http://127.0.0.1:8000/api/providers`
+
+#### 10.1.2 [NEW] `PUT /api/providers/{provider_id}/config`
+
+部分更新 Provider 的配置。三个字段都可选，但请求体至少要包含一个，否则 422。
+
+请求体：
+```json
+{ "base_url": "...", "default_model": "...", "default_key_id": "..." }
+```
+
+响应 200：返回更新后的 `ProviderConfigOut`：
+```json
+{ "base_url": "...", "default_model": "...", "default_key_id": "..." }
+```
+
+错误：
+- `400 unknown_provider` — `provider_id` 不在 `PROVIDER_REGISTRY`
+- `422` — 请求体校验（包括"三字段都为 null"）
+
+#### 10.1.3 [NEW] `GET /api/providers/{provider_id}/keys`
+
+列出该 Provider 下所有 Key 元数据（**不含**凭据明文/密文）。
+
+响应 200：
+```json
+{
+  "keys": [
+    { "id": "abc-123-...", "provider_id": "momo", "label": "personal", "created_at": "2026-05-09T12:34:56Z" }
+  ]
+}
+```
+
+错误：`400 unknown_provider`。
+
+#### 10.1.4 [NEW] `POST /api/providers/{provider_id}/keys`
+
+新增一条 Key。提交时凭据字段已用 RSA 公钥按字段加密。
+
+请求体：
+```json
+{ "label": "personal", "encrypted_credentials": { "api_key": "<base64 RSA-OAEP ciphertext>" } }
+```
+
+服务端会：
+1. 解密 `encrypted_credentials` 得到明文 dict；
+2. 校验 dict 的 keys 与 Provider 的 `credential_fields[i].name` 一致（多余字段忽略，必填字段缺失返回 400）；
+3. AES-256-GCM 加密落库（normal）或入内存（demo）；
+4. **同步**触发一次 models refresh —— 但失败不会回滚 Key 添加，只在响应里把 `models_refresh_error` 字段填上 upstream 摘要。
+
+响应 201：
+```json
+{
+  "key": { "id": "abc-123-...", "provider_id": "momo", "label": "personal", "created_at": "2026-05-09T12:34:56Z" },
+  "models": [ { "id": "t8-/gpt-image-2", "display_name": null, "fetched_at": "..." } ],
+  "models_refresh_error": null
+}
+```
+
+错误：
+- `400 unknown_provider`
+- `400 credential_decrypt_failed` — RSA 解密失败（公钥/私钥错配）
+- `400 invalid_credentials` — 必填字段缺失（带 `missing_fields: ["api_key", ...]`）
+- 注意：refresh 步骤失败时**不**抛 502，而是把错误塞 `models_refresh_error` 字段返回；前端可据此提示用户"凭据已保存但拉取模型失败，请稍后手动 Refresh"。
+
+#### 10.1.5 [NEW] `DELETE /api/providers/{provider_id}/keys/{key_id}`
+
+级联删除：移除 Key 行 + 该 Key 的 cached models，并清空对应 `default_key_id`。
+
+响应 204：无响应体。
+
+错误：
+- `400 unknown_provider`
+- `404 key_not_found`
+
+注意：服务端**不**校验"是否还有未完成的任务在引用该 Key"。前端如需阻止删除应先查活动任务。
+
+#### 10.1.6 [NEW] `GET /api/providers/{provider_id}/models?key_id=<kid>`
+
+返回该 Key 已缓存的模型列表（不会触发 upstream 调用）。Query `key_id` 必填。
+
+响应 200：
+```json
+{ "models": [ { "id": "t8-/gpt-image-2", "display_name": null, "fetched_at": "2026-05-09T12:34:56Z" } ] }
+```
+
+错误：`400 unknown_provider` / `400 key_not_found`（Query 中的 key 在 store 里不存在）。`models` 可为空数组。
+
+#### 10.1.7 [NEW] `POST /api/providers/{provider_id}/models/refresh`
+
+强制从 upstream 重新拉取模型列表并替换缓存。
+
+请求体：`{ "key_id": "abc-123-..." }`
+
+响应 200：刷新后的 `ProviderModelMeta[]`。
+
+错误：
+- `400 unknown_provider`
+- `400 key_not_found`
+- `502 upstream_error` — `list_models` 调用失败（带 `message` 摘要，不含 Authorization）
+
+---
+
+### 10.2 [v2 — 自 2026-05-09] `POST /api/tasks`
+
+替代 §1.1 的旧定义。
+
+**REMOVED 字段**：`encrypted_api_key`、`base_url`。
+**ADDED 必填字段**：`provider_id` (string)、`key_id` (string)、`model` (string，必填，不再缺省回落到 config)。
+
+请求体（新）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `prompt` | `string` | 是 | 提示词原文 |
+| `prompt_template_id` | `string \| null` | 否 | （注：v1 中字段名为 `prompt_id`；v2 沿用 `prompt_template_id`，后端兼容两者）|
+| `save_as_template` | `bool` | 否 | |
+| `provider_id` | `string` | **是** | 例如 `"momo"` |
+| `key_id` | `string` | **是** | 来自 `GET /api/providers/{id}/keys` |
+| `model` | `string` | **是** | 来自 `GET /api/providers/{id}/models` 或 Provider config 的 `default_model` |
+| `size` | `string \| null` | 否 | 默认 `"1024x1024"` |
+| `quality` | `"low" \| "medium" \| "high" \| "auto" \| null` | 否 | 默认 `"low"` |
+| `format` | `string \| null` | 否 | 默认 `"jpeg"` |
+| `n` | `int` | 否 | 1–50，默认 1 |
+| `priority` | `bool` | 否 | |
+
+响应 201：与既有 `TaskItem` 一致，新增 `provider_id` / `key_id` 字段（旧任务为 null）：
+
+```json
+{
+  "tasks": [
+    {
+      "id": "...",
+      "prompt": "a cat",
+      "model": "t8-/gpt-image-2",
+      "size": "1024x1024",
+      "quality": "low",
+      "format": "jpeg",
+      "status": "queued",
+      "progress": 0,
+      "image_path": null,
+      "image_url": null,
+      "error_message": null,
+      "created_at": "2026-05-09T12:34:56Z",
+      "started_at": null,
+      "finished_at": null,
+      "priority": 0,
+      "provider_id": "momo",
+      "key_id": "abc-123-..."
+    }
+  ]
+}
+```
+
+错误（新增 / 修改）：
+- `400 unknown_provider` — `provider_id` 不在 `PROVIDER_REGISTRY`，extra: `provider_id`
+- `400 provider_not_configured` — provider 没有任何 Key（或没有 base_url 配置），extra: `provider_id`
+- `400 key_not_found` — `key_id` 在该 Provider 的 store 中不存在，extra: `key_id`
+- `429 queue_full` — 沿用 §1.1
+- `422 validation` — 沿用 FastAPI 默认
+
+curl：
+```bash
+curl -X POST http://127.0.0.1:8000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"a cat","provider_id":"momo","key_id":"abc-123-...","model":"t8-/gpt-image-2","n":1}'
+```
+
+---
+
+### 10.3 Tasks 其它端点
+
+`GET /api/tasks` / `GET /api/tasks/{id}` / `DELETE /api/tasks/{id}` / `GET /api/tasks/stream/events` 行为不变。`TaskItem` 响应 schema 多了 `provider_id` / `key_id` 字段（旧任务为 null）。
+
+---
+
+### 10.4 [CHANGED] `GET /api/config/status`
+
+> 旧文档未覆盖此端点；本节即为持久化定义。`GET /api/config/public-key` 不变。
+
+**REMOVED 字段（相对未文档化的旧实现）**：`api_key_configured`、`base_url`。
+**ADDED 字段**：
+- `mode`: `"normal" | "demo"`（来自 `config.mode`）
+- `any_provider_configured`: `bool`（任意一个 Provider 至少有一个 Key 即为 true）
+
+响应 200：
+```json
+{ "mode": "normal", "any_provider_configured": false }
+```
+
+curl：`curl http://127.0.0.1:8000/api/config/status`
+
+---
+
+### 10.5 数据类型 (新增 / 扩展)
+
+```ts
+// CredField — Provider 在 GET /api/providers 中声明的字段元数据
+export interface CredField {
+  name: string;
+  label: string;
+  secret: boolean;     // true 时前端用 password input
+  required: boolean;
+}
+
+// ProviderConfigOut
+export interface ProviderConfigOut {
+  base_url: string;
+  default_model: string | null;
+  default_key_id: string | null;
+}
+
+// ProviderSummary — GET /api/providers 列表项
+export interface ProviderSummary {
+  id: string;
+  display_name: string;
+  default_base_url: string;
+  credential_fields: CredField[];
+  config: ProviderConfigOut | null;
+  key_count: number;
+}
+
+// ProviderKeyMeta — 永远不含凭据明文/密文
+export interface ProviderKeyMeta {
+  id: string;
+  provider_id: string;
+  label: string;
+  created_at: string;            // ISO-8601 UTC
+}
+
+// ProviderModelMeta
+export interface ProviderModelMeta {
+  id: string;
+  display_name: string | null;
+  fetched_at: string;            // ISO-8601 UTC
+}
+
+// AddKeyRequest
+export interface AddKeyRequest {
+  label: string;
+  encrypted_credentials: Record<string, string>;  // value = base64 RSA-OAEP ciphertext
+}
+
+// AddKeyResponse
+export interface AddKeyResponse {
+  key: ProviderKeyMeta;
+  models: ProviderModelMeta[];
+  models_refresh_error: string | null;
+}
+
+// UpdateProviderConfigRequest
+export interface UpdateProviderConfigRequest {
+  base_url?: string;
+  default_model?: string;
+  default_key_id?: string;
+}
+
+// RefreshModelsRequest
+export interface RefreshModelsRequest { key_id: string; }
+
+// ConfigStatusResponse — GET /api/config/status (重写)
+export interface ConfigStatusResponse {
+  mode: "normal" | "demo";
+  any_provider_configured: boolean;
+}
+
+// TaskItem 的 v2 增量字段（其余字段同 §7）
+// provider_id: string | null;
+// key_id:      string | null;
+```
+
+---
+
+### 10.6 错误码 (新增)
+
+| HTTP | code | 触发 | 额外字段 |
+|------|------|------|----------|
+| 400 | `unknown_provider` | `provider_id` 不在 `PROVIDER_REGISTRY` | `provider_id` |
+| 400 | `provider_not_configured` | provider 没有任何 Key 但被任务引用 | `provider_id` |
+| 400 | `key_not_found` | 指定 `key_id` 不存在（POST /api/tasks、refresh、GET /models） | `key_id` |
+| 400 | `invalid_credentials` | `add_key` 时必填字段缺失 | `missing_fields: string[]` |
+| 400 | `credential_decrypt_failed` | RSA-OAEP 解密失败 | — |
+| 404 | `key_not_found` | `DELETE /api/providers/{id}/keys/{kid}` 命中不存在的 key | `key_id` |
+| 502 | `upstream_error` | `list_models` / `refresh` upstream 失败 | `message`（脱敏） |
+
+> 注：`key_not_found` 在 400 与 404 都出现，是因为 DELETE 上下文按 REST 语义返回 404，其它上下文（`POST /api/tasks` 提交时 / `refresh` 时）按"输入校验失败"返回 400。前端按 `code` 区分即可，HTTP status 只是辅助。
+
+---
+
+### 10.7 已删除的接口表面 (Removed surface)
+
+下列字段/行为在本轮**已删除**：
+
+- `TaskCreateRequest.encrypted_api_key`、`TaskCreateRequest.base_url`（见 §10.2）
+- `ConfigStatusResponse.api_key_configured`、`ConfigStatusResponse.base_url`（见 §10.4）
+- `MissingApiKeyError` (`api_key_missing` 400) — 替换为 `provider_not_configured` / `key_not_found`
+- 配置文件中的 `api:` 段（`api_key`、`base_url`、`default_model`、…）
+- 环境变量 `VIBE_API_KEY`、`VIBE_BASE_URL`
+
+---
+
+### 10.8 端点清单（合并后总览）
+
+| Method | Path | 备注 |
+|--------|------|------|
+| POST | `/api/tasks` | v2（§10.2，旧定义 §1.1 已弃用） |
+| GET | `/api/tasks` | 不变 |
+| GET | `/api/tasks/{task_id}` | 不变 |
+| DELETE | `/api/tasks/{task_id}` | 不变 |
+| GET | `/api/tasks/stream/events` | 不变 |
+| GET | `/api/prompts` 等 | 不变 |
+| GET | `/api/settings`、PUT | 不变 |
+| GET | `/api/history`、DELETE | 不变 |
+| GET | `/api/health` | 不变 |
+| GET | `/api/config/status` | 重写（§10.4）|
+| GET | `/api/config/public-key` | 不变 |
+| GET | `/api/providers` | 新增（§10.1.1） |
+| PUT | `/api/providers/{provider_id}/config` | 新增（§10.1.2） |
+| GET | `/api/providers/{provider_id}/keys` | 新增（§10.1.3） |
+| POST | `/api/providers/{provider_id}/keys` | 新增（§10.1.4） |
+| DELETE | `/api/providers/{provider_id}/keys/{key_id}` | 新增（§10.1.5） |
+| GET | `/api/providers/{provider_id}/models` | 新增（§10.1.6） |
+| POST | `/api/providers/{provider_id}/models/refresh` | 新增（§10.1.7） |
+| GET | `/images/{filename}` | StaticFiles，不变 |
+
+> 自 2026-05-09（II）起新增 `POST /api/uploads/temp`、`POST /api/tasks` 加入可选字段 `input_image_path`、`TaskItem` / `ProviderSummary` 增字段，详见 §11。
+
+---
+
+## 11. 2026-05-09 Addendum (II) — img2img 支持
+
+> 本节是 img2img-support 这一轮的接口增量，由 `docs/interface.draft.md`（已合入并删除）合并而来。
+>
+> §11 内的端点定义优先于上文同名/同路径的旧定义，**仅当本节显式列出的字段或错误码与上文不同时**生效；其余字段（`prompt` / `provider_id` / `key_id` / `model` / `size` / …）沿用 §10.2。
+>
+> 错误响应仍统一形如 `{ "code": "...", "message": "...", ...optional fields }`。
+
+### 11.1 [NEW] `POST /api/uploads/temp`
+
+上传一张图生图的参考图，返回服务端落盘的相对路径。前端在新建任务前调用本端点拿到 `input_image_path`，再把它当作 `POST /api/tasks` 的 `input_image_path` 字段传入。
+
+- **Content-Type**: `multipart/form-data`
+- **请求字段**：
+  - `file` （**必填**，binary）— 仅接受 `image/png` / `image/jpeg` / `image/webp`，按 MIME + 文件头双重校验。
+
+后端语义：
+1. 读全文件至内存，超过 `defaults.max_upload_bytes`（默认 `10 * 1024 * 1024` = 10 MiB；可通过 `VIBE_DEFAULTS_MAX_UPLOAD_BYTES` env 覆盖）→ 413。
+2. magic-byte 校验确认是真 PNG / JPEG / WEBP，否则 → 400。
+3. 计算 `sha1(content)` 作为去重键；若 `images_dir/temp/<sha1>.<ext>` 已存在则跳过写入（同内容重复上传幂等）。
+4. 扩展名按 sniff 结果取（不信用户提交的文件名/MIME）：PNG → `.png`，JPEG → `.jpg`，WEBP → `.webp`。
+
+**响应 200**：
+```json
+{
+  "input_image_path": "temp/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b.png",
+  "url": "/images/temp/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b.png"
+}
+```
+
+> 注：`input_image_path` 用 forward slash 形式（即使后端是 Windows）。前端原样回填到 `POST /api/tasks` 的 `input_image_path`；`url` 可直接拼到 `<img :src>`（与 `/images/...` 静态服务并存）。
+
+**错误**：
+
+| HTTP | code | 触发 | 额外字段 |
+|------|------|------|----------|
+| 400 | `invalid_upload` | 缺 `file` 字段 / 非允许 MIME / 头校验未过 | `reason: string` |
+| 413 | `upload_too_large` | 字节数 > `max_upload_bytes` | `max_bytes: int`, `actual_bytes: int` |
+
+**curl 示例**：
+```bash
+curl -F file=@photo.png http://127.0.0.1:8000/api/uploads/temp
+```
+
+**安全约束**：
+- 错误信息中**不**回显完整原始文件名给前端（仅响应 sha1 短哈希），避免暴露文件系统细节。
+- `images_dir/temp/` 在后端启动时确保存在（`config.images_temp_dir`）。
+- 上传文件**不**会在任务结束后自动清理（保留以便历史回看）；GC 留作后续工单。
+
+---
+
+### 11.2 [CHANGED] `POST /api/tasks` — 增量字段 `input_image_path`
+
+在 §10.2（v2，2026-05-09）的基础上新增**一个可选字段**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `input_image_path` | `string \| null` | 否 | 由 `POST /api/uploads/temp` 返回，形如 `"temp/<sha1>.<ext>"`，**必须以 `temp/` 开头**。非空时该任务走 img2img 通路。 |
+
+其余请求字段与 §10.2 完全一致。
+
+后端语义（与 §10.2 v2 流程的差异）：
+1. 若 `input_image_path` 非空：
+   - 拼绝对路径 `(images_dir / input_image_path).resolve()`，必须以 `images_dir.resolve()` 为前缀；否则 → 400 `input_image_not_found`。
+   - 该绝对路径必须实际存在；不存在 → 400 `input_image_not_found`。
+   - 选中 provider 的 `supports_image_input` 必须为 `true`；否则 → 400 `provider_capability_unsupported`。
+2. `input_image_path` 透传到 `TaskInput`，最终在 `generate_image` 里被 provider 的 `build_image_edit_request` 使用。
+3. `n > 1` 时每条任务共用同一个 `input_image_path`（不复制文件）。
+
+**响应 201**（与 §10.2 一致，但 `TaskItem` 增量见 §11.3）。
+
+**错误**（新增 / 沿用）：
+
+| HTTP | code | 触发 | 额外字段 |
+|------|------|------|----------|
+| 400 | `input_image_not_found` | `input_image_path` 不存在或越界（指向 `images_dir` 之外） | `input_image_path: string` |
+| 400 | `provider_capability_unsupported` | 任务带 `input_image_path` 但选中 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: "image_input"` |
+| 400 | `unknown_provider` / `provider_not_configured` / `key_not_found` | 沿用 §10.2 |  |
+| 429 | `queue_full` | 沿用 §1.1 |  |
+
+**curl 示例**：
+```bash
+# 1. 上传参考图
+RESP=$(curl -s -F file=@cat.png http://127.0.0.1:8000/api/uploads/temp)
+PATH_=$(echo "$RESP" | python -c "import sys,json;print(json.load(sys.stdin)['input_image_path'])")
+
+# 2. 提交带图任务
+curl -X POST http://127.0.0.1:8000/api/tasks \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\":\"redraw as oil painting\",\"provider_id\":\"momo\",\"key_id\":\"abc-123\",\"model\":\"t8-/gpt-image-2\",\"input_image_path\":\"$PATH_\"}"
+```
+
+---
+
+### 11.3 [CHANGED] `TaskItem` — 增量字段 `input_image_path` / `input_image_url`
+
+`TaskItem` schema 在 §7 + §10.5（v2）字段基础上新增两个字段：
+
+| 字段 | 类型 | 来源 | 说明 |
+|------|------|------|------|
+| `input_image_path` | `string \| null` | DB 列 | 形如 `"temp/<sha1>.<ext>"`；旧任务（升级前创建）为 `null` |
+| `input_image_url` | `string \| null` | computed | 当 `input_image_path` 非空时为 `"/images/" + input_image_path`，否则 `null`；前端直接 `<img :src>` 用 |
+
+完整示例（带图任务）：
+```json
+{
+  "id": "task-xyz",
+  "prompt": "redraw as oil painting",
+  "title": "redraw as oil painting",
+  "model": "t8-/gpt-image-2",
+  "size": "1024x1024",
+  "quality": "low",
+  "format": "jpeg",
+  "status": "succeeded",
+  "progress": 100,
+  "image_path": "/abs/path/images/generated_task-xyz.jpeg",
+  "image_url": "/images/generated_task-xyz.jpeg",
+  "input_image_path": "temp/9f86d0...png",
+  "input_image_url": "/images/temp/9f86d0...png",
+  "error_message": null,
+  "created_at": "2026-05-09T12:34:56Z",
+  "started_at": "2026-05-09T12:34:57Z",
+  "finished_at": "2026-05-09T12:35:30Z",
+  "priority": 0,
+  "provider_id": "momo",
+  "key_id": "abc-123-..."
+}
+```
+
+`TaskItem` 在所有列出 / 单查 / SSE terminal payload 路径里都会带这两个字段；旧任务两字段都为 `null`，前端按缺省处理（不渲染输入图）。
+
+---
+
+### 11.4 [CHANGED] `GET /api/providers` — `ProviderSummary.supports_image_input`
+
+`ProviderSummary` 在 §10.5 基础上新增一个布尔字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `supports_image_input` | `boolean` | `true` 表示该 Provider 实现了 `build_image_edit_request`（img2img 入口），前端可据此点亮"参考图"上传 UI；`false` 时禁用并提示"当前 Provider 不支持图生图"。 |
+
+本期内置 provider 的取值：
+- `"momo"` → `supports_image_input: true`
+
+未来新接入的 provider 默认 `false`，需在 provider 实现里显式声明。
+
+`ProviderSummary` 在所有列出位置都附带本字段；增字段，旧 client 忽略即可，无向后兼容问题。
+
+---
+
+### 11.5 数据类型 (TS)
+
+```ts
+/** Response of POST /api/uploads/temp. */
+export interface TempUploadResponse {
+  /** Server-side relative path, e.g. "temp/<sha1>.png". Re-submit verbatim
+   *  in POST /api/tasks's `input_image_path` field. */
+  input_image_path: string;
+  /** Public URL for inline preview, e.g. "/images/temp/<sha1>.png". */
+  url: string;
+}
+
+// TaskItem 的 (II) 增量字段（其余字段同 §7 + §10.5）：
+//   input_image_path: string | null;
+//   input_image_url:  string | null;   // computed: "/images/" + input_image_path
+
+// ProviderSummary 的 (II) 增量字段（其余字段同 §10.5）：
+//   supports_image_input: boolean;
+
+// CreateTaskRequest 的 (II) 增量字段（其余字段同 §10.2）：
+//   input_image_path?: string | null;  // "temp/<sha1>.<ext>"
+```
+
+---
+
+### 11.6 错误码增量
+
+新增 4 个 code（其余沿用既有 §8 + §10.6 错误码表）：
+
+| HTTP | code | 端点 | 触发条件 | 额外字段 |
+|------|------|------|---------|---------|
+| 400 | `invalid_upload` | `POST /api/uploads/temp` | 文件缺失 / MIME 不允许 / 头校验失败 | `reason: string` |
+| 413 | `upload_too_large` | `POST /api/uploads/temp` | 字节数超过 `defaults.max_upload_bytes` | `max_bytes: int`, `actual_bytes: int` |
+| 400 | `input_image_not_found` | `POST /api/tasks` | `input_image_path` 不存在或越界（指向 `images_dir` 之外） | `input_image_path: string` |
+| 400 | `provider_capability_unsupported` | `POST /api/tasks` | 任务带 `input_image_path`，但 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: string`（本期固定为 `"image_input"`）|
+
+---
+
+### 11.7 兼容性 / 边界
+
+- 既有不带 `input_image_path` 的任务流程**完全不受影响**——字段是可选的；旧 client 不发字段即走文生图分支，行为与 v2 一致。
+- 旧任务（升级前已落库）`input_image_path` 列为 NULL，`TaskItem.input_image_path` / `input_image_url` 都返回 `null`，前端按缺省渲染。
+- 上传文件不会在任务结束时被自动 GC；多次任务可复用同一个 `input_image_path`（`POST /api/uploads/temp` 内置去重）。
+- 上传不做速率限制（本期单机工具，留作后续）。
+
+---
+
+### 11.8 端点清单（合并后总览）
+
+| Method | Path | 备注 |
+|--------|------|------|
+| POST | `/api/uploads/temp` | 新增（§11.1）— multipart |
+| POST | `/api/tasks` | v2 + img2img 增量字段（§11.2）|
+| GET | `/api/providers` | 新增 `supports_image_input` 字段（§11.4） |
+| 其余 §10.8 端点 | | 不变 |

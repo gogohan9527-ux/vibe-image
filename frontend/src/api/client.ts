@@ -1,4 +1,6 @@
 import type {
+  AddKeyRequest,
+  AddKeyResponse,
   CancelTaskResponse,
   ConfigStatus,
   CreatePromptRequest,
@@ -7,13 +9,21 @@ import type {
   ErrorBody,
   HistoryListResponse,
   HistoryQuery,
+  ListProviderKeysResponse,
+  ListProviderModelsResponse,
+  ListProvidersResponse,
   ListPromptsResponse,
   ListTasksResponse,
+  ProviderConfigOut,
   PromptItem,
   PublicKeyResponse,
+  RefreshModelsRequest,
+  RefreshModelsResponse,
   Settings,
   TaskItem,
+  TempUploadResponse,
   UpdatePromptRequest,
+  UpdateProviderConfigRequest,
   UpdateSettingsRequest,
 } from '@/types/api';
 
@@ -77,6 +87,44 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   return parsed as T;
+}
+
+// --- Uploads (img2img reference image) ---
+// Multipart upload — bypass the JSON `request<T>` wrapper because FormData
+// requires the browser to set its own Content-Type with boundary.
+export async function uploadTempImage(file: File): Promise<TempUploadResponse> {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch('/api/uploads/temp', { method: 'POST', body: fd });
+
+  if (res.status === 204) {
+    throw new ApiError(res.status, { code: 'http_error', message: 'Empty response' });
+  }
+
+  const text = await res.text();
+  let parsed: unknown = null;
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (!res.ok) {
+    if (isErrorBody(parsed)) {
+      throw new ApiError(res.status, parsed);
+    }
+    if (parsed && typeof parsed === 'object' && 'detail' in (parsed as Record<string, unknown>)) {
+      throw new ApiError(res.status, {
+        code: 'validation_error',
+        message: 'Request validation failed',
+        detail: (parsed as { detail: unknown }).detail,
+      });
+    }
+    throw new ApiError(res.status, { code: 'http_error', message: `HTTP ${res.status}` });
+  }
+  return parsed as TempUploadResponse;
 }
 
 // --- Tasks ---
@@ -144,4 +192,67 @@ export function getConfigStatus(): Promise<ConfigStatus> {
 
 export function getPublicKey(): Promise<PublicKeyResponse> {
   return request<PublicKeyResponse>('GET', '/api/config/public-key');
+}
+
+// --- Providers (2026-05-09) ---
+export function listProviders(): Promise<ListProvidersResponse> {
+  return request<ListProvidersResponse>('GET', '/api/providers');
+}
+
+export function updateProviderConfig(
+  providerId: string,
+  body: UpdateProviderConfigRequest,
+): Promise<ProviderConfigOut> {
+  return request<ProviderConfigOut>(
+    'PUT',
+    `/api/providers/${encodeURIComponent(providerId)}/config`,
+    body,
+  );
+}
+
+export function listProviderKeys(providerId: string): Promise<ListProviderKeysResponse> {
+  return request<ListProviderKeysResponse>(
+    'GET',
+    `/api/providers/${encodeURIComponent(providerId)}/keys`,
+  );
+}
+
+export function addProviderKey(
+  providerId: string,
+  body: AddKeyRequest,
+): Promise<AddKeyResponse> {
+  return request<AddKeyResponse>(
+    'POST',
+    `/api/providers/${encodeURIComponent(providerId)}/keys`,
+    body,
+  );
+}
+
+export function deleteProviderKey(providerId: string, keyId: string): Promise<void> {
+  return request<void>(
+    'DELETE',
+    `/api/providers/${encodeURIComponent(providerId)}/keys/${encodeURIComponent(keyId)}`,
+  );
+}
+
+export function listProviderModels(
+  providerId: string,
+  keyId: string,
+): Promise<ListProviderModelsResponse> {
+  const qs = new URLSearchParams({ key_id: keyId }).toString();
+  return request<ListProviderModelsResponse>(
+    'GET',
+    `/api/providers/${encodeURIComponent(providerId)}/models?${qs}`,
+  );
+}
+
+export function refreshProviderModels(
+  providerId: string,
+  body: RefreshModelsRequest,
+): Promise<RefreshModelsResponse> {
+  return request<RefreshModelsResponse>(
+    'POST',
+    `/api/providers/${encodeURIComponent(providerId)}/models/refresh`,
+    body,
+  );
 }

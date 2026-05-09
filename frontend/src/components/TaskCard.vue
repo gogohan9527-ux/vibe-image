@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { ElIcon, ElProgress, ElTag, ElTooltip, ElMessage, ElMessageBox } from 'element-plus';
-import { Picture, VideoPause, VideoPlay, Delete, Loading } from '@element-plus/icons-vue';
+import { Picture, VideoPause, VideoPlay, Delete, Loading, CopyDocument } from '@element-plus/icons-vue';
 import type { TaskItem } from '@/types/api';
 import { cancelTask, ApiError } from '@/api/client';
 import { formatDateTime, formatEta } from '@/utils/format';
+import PreviewImage from '@/components/PreviewImage.vue';
 
 interface Props {
   task: TaskItem;
@@ -89,6 +90,20 @@ const avatarHue = computed(() => {
   const palette = ['#4f7df9', '#22c55e', '#a855f7', '#f59e0b', '#ec4899', '#06b6d4'];
   return palette[(props.index - 1) % palette.length];
 });
+
+// Tasks created before the 2026-05-09 plugin-providers round have NULL provider_id.
+const isLegacy = computed<boolean>(() => props.task.provider_id == null);
+
+async function copyError(): Promise<void> {
+  const msg = props.task.error_message;
+  if (!msg) return;
+  try {
+    await navigator.clipboard.writeText(msg);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.error('复制失败');
+  }
+}
 </script>
 
 <template>
@@ -103,6 +118,7 @@ const avatarHue = computed(() => {
         <ElTag size="small" :type="statusMeta.type" effect="light" round>
           {{ statusMeta.label }}
         </ElTag>
+        <ElTag v-if="isLegacy" size="small" type="info" effect="plain" round>legacy</ElTag>
       </div>
 
       <ElTooltip :content="task.prompt" placement="top" :show-after="400">
@@ -120,12 +136,32 @@ const avatarHue = computed(() => {
         />
         <span class="progress-text">{{ task.progress }}%</span>
       </div>
+
+      <div v-if="task.status === 'failed'" class="task-error">
+        <template v-if="task.error_message">
+          <ElTooltip :content="task.error_message" placement="top" :show-after="300">
+            <span class="task-error-text">{{ task.error_message }}</span>
+          </ElTooltip>
+          <button
+            type="button"
+            class="task-error-copy"
+            title="复制错误信息"
+            @click="copyError"
+          >
+            <ElIcon><CopyDocument /></ElIcon>
+            复制
+          </button>
+        </template>
+        <span v-else class="task-error-empty">无错误描述</span>
+      </div>
     </div>
 
-    <div class="task-thumb">
-      <img v-if="task.image_url" :src="task.image_url" alt="thumbnail" />
-      <div v-else class="thumb-placeholder">
-        <ElIcon :size="22" color="#cbd5e1"><Picture /></ElIcon>
+    <div class="task-thumbs">
+      <div v-if="task.input_image_url" class="task-input-thumb" title="参考图">
+        <PreviewImage :src="task.input_image_url" alt="input" />
+      </div>
+      <div class="task-thumb">
+        <PreviewImage :src="task.image_url" alt="thumbnail" />
       </div>
     </div>
 
@@ -155,7 +191,7 @@ const avatarHue = computed(() => {
 <style scoped>
 .task-card {
   display: grid;
-  grid-template-columns: 56px 1fr 132px 110px;
+  grid-template-columns: 56px 1fr auto 110px;
   gap: 18px;
   align-items: center;
   background: var(--vi-card-bg);
@@ -225,6 +261,23 @@ const avatarHue = computed(() => {
   text-align: right;
 }
 
+.task-thumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.task-input-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f3f8;
+  border: 1px solid var(--vi-border);
+  flex-shrink: 0;
+}
+
 .task-thumb {
   width: 132px;
   height: 80px;
@@ -233,19 +286,7 @@ const avatarHue = computed(() => {
   background: #f1f3f8;
   display: grid;
   place-items: center;
-}
-
-.task-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.thumb-placeholder {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
+  flex-shrink: 0;
 }
 
 .task-side {
@@ -302,5 +343,46 @@ const avatarHue = computed(() => {
 .icon-btn:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.task-error {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--vi-danger, #ef4444);
+}
+
+.task-error-text {
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.task-error-copy {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--vi-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.task-error-copy:hover {
+  color: var(--vi-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.task-error-empty {
+  font-size: 13px;
+  color: var(--vi-text-faint);
 }
 </style>

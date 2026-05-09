@@ -1,11 +1,12 @@
-api:
-  base_url: "https://momoapi.top/v1/images/generations"
-  api_key: "REPLACE_ME"
-  default_model: "t8-/gpt-image-2"
-  default_size: "1024x1024"
-  default_quality: "low"
-  default_format: "jpeg"
-  request_timeout_seconds: 120
+# Run mode: "normal" (SQLite + AES-GCM at-rest) or "demo" (in-memory).
+# Override with env: VIBE_MODE=demo
+mode: normal
+
+# Optional master key for AES-256-GCM encryption of provider credentials.
+# Hex (64 chars) or base64 (44 chars) representation of 32 bytes.
+# When unset, the backend reads/writes data/master.key automatically.
+# Override with env: VIBE_SECRET_KEY=...
+# secret_key: ""
 
 server:
   host: "127.0.0.1"
@@ -23,3 +24,9 @@ paths:
   images_dir: "./images"
   prompts_dir: "./prompt"
   database_path: "./data/vibe.db"
+
+defaults:
+  request_timeout_seconds: 120
+  # Max reference-image upload size for img2img (bytes). Override with env:
+  # VIBE_DEFAULTS_MAX_UPLOAD_BYTES.
+  max_upload_bytes: 10485760  # 10 MiB

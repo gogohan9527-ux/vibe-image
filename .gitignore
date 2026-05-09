@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .python-version
 .pytest_cache/
+.pytest_tmp/
+.tmp/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -43,6 +45,8 @@ config/config.yaml
 # Local data
 data/
 !data/.gitkeep
+# Belt-and-braces — master.key holds the AES root key for credential at-rest.
+data/master.key
 
 # Generated images (keep folder, not contents)
 images/*
@@ -89,3 +93,6 @@ ai-output/
 ai_outputs/
 llm-output/
 llm_outputs/
+
+# TLS certs
+certs/

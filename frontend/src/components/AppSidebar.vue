@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElButton, ElIcon } from 'element-plus';
-import { Plus, List, Clock, Setting, Picture, Document } from '@element-plus/icons-vue';
+import { Plus, List, Clock, Setting, Document, Connection } from '@element-plus/icons-vue';
 
 defineEmits<{
   (e: 'new-task'): void;
@@ -16,6 +16,7 @@ const navItems = computed(() => [
   { key: 'tasks', label: '任务列表', path: '/', icon: List },
   { key: 'history', label: '历史记录', path: '/history', icon: Clock },
   { key: 'templates', label: '模板配置', path: '/templates', icon: Document },
+  { key: 'providers', label: '插件配置', path: '/providers', icon: Connection },
 ]);
 
 const activeKey = computed(() => {
@@ -33,9 +34,7 @@ function go(path: string): void {
 <template>
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-logo">
-        <ElIcon :size="18"><Picture /></ElIcon>
-      </div>
+      <img class="brand-logo" src="/logo.png" alt="vibe-image logo" />
       <div class="brand-text">提示词生成图片</div>
     </div>
 
@@ -90,10 +89,8 @@ function go(path: string): void {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #4d7df9, #7da6ff);
-  color: #fff;
-  display: grid;
-  place-items: center;
+  object-fit: cover;
+  display: block;
 }
 
 .brand-text {

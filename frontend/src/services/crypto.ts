@@ -48,6 +48,20 @@ export async function encryptApiKey(plaintext: string): Promise<string> {
   return bufferToBase64(ct);
 }
 
+// Encrypt every value of `obj` against the backend's RSA public key in
+// parallel, preserving the original keys. Used by the AddKey flow to send
+// arbitrary credential dicts ({ api_key: "...", ... }) without ever putting
+// plaintext on the wire.
+export async function encryptObject(
+  obj: Record<string, string>,
+): Promise<Record<string, string>> {
+  const entries = Object.entries(obj);
+  const encrypted = await Promise.all(
+    entries.map(async ([k, v]) => [k, await encryptApiKey(v)] as const),
+  );
+  return Object.fromEntries(encrypted);
+}
+
 export function resetPublicKeyCache(): void {
   cachedKey = null;
   cachedPem = null;

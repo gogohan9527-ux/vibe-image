@@ -4,20 +4,19 @@ import { ElMessage } from 'element-plus';
 import AppSidebar from '@/components/AppSidebar.vue';
 import NewTaskDrawer from '@/components/NewTaskDrawer.vue';
 import SettingsDialog from '@/components/SettingsDialog.vue';
-import ApiCredentialsDialog from '@/components/ApiCredentialsDialog.vue';
 import { useTaskStream } from '@/composables/useTaskStream';
-import { useApiAuthStore } from '@/stores/useApiAuthStore';
+import { useProviderStore } from '@/stores/useProviderStore';
 
 const newTaskOpen = ref(false);
 const settingsOpen = ref(false);
 
-const auth = useApiAuthStore();
+const providers = useProviderStore();
 const { open: openStream, close: closeStream } = useTaskStream();
 
 onMounted(async () => {
   openStream();
   try {
-    await auth.loadStatus();
+    await providers.bootstrap();
   } catch {
     ElMessage.error('无法获取后端配置状态，请检查后端是否已启动');
   }
@@ -35,7 +34,6 @@ onBeforeUnmount(() => {
     </main>
     <NewTaskDrawer v-model:open="newTaskOpen" />
     <SettingsDialog v-model:open="settingsOpen" />
-    <ApiCredentialsDialog />
   </div>
 </template>
 
