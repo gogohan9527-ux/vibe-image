@@ -86,12 +86,21 @@ onBeforeUnmount(() => {
   padding: 24px 28px;
 }
 
+/* Mobile: full width, bottom padding for nav bar */
+@media (max-width: 767px) {
+  .app-main {
+    padding: 16px;
+    padding-bottom: calc(60px + env(safe-area-inset-bottom) + 16px);
+  }
+}
+
 .demo-denied-overlay {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100vh;
+  min-height: 100vh;
   background: #f0f2f5;
+  padding: 16px;
 }
 
 .demo-denied-card {
@@ -101,6 +110,13 @@ onBeforeUnmount(() => {
   text-align: center;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.10);
   max-width: 420px;
+  width: 100%;
+}
+
+@media (max-width: 767px) {
+  .demo-denied-card {
+    padding: 36px 24px;
+  }
 }
 
 .demo-denied-icon {

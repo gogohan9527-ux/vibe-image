@@ -483,4 +483,28 @@ function isLegacy(row: TaskItem): boolean {
   color: var(--vi-text-faint);
   font-size: 13px;
 }
+
+/* Mobile: allow table to scroll horizontally */
+@media (max-width: 767px) {
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  .filters {
+    flex-wrap: wrap;
+  }
+
+  .search-input {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .status-select {
+    width: 120px;
+  }
+
+  .pagination {
+    justify-content: center;
+  }
+}
 </style>

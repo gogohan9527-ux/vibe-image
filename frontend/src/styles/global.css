@@ -49,3 +49,22 @@ button {
 .el-progress-bar__inner {
   background-color: var(--vi-primary);
 }
+
+/* Mobile base */
+@media (max-width: 767px) {
+  html {
+    /* Prevent iOS font size bump in landscape */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Ensure Element Plus drawers and dialogs sit above bottom nav */
+  .el-overlay {
+    z-index: 200 !important;
+  }
+
+  /* Tighten Element Plus radio buttons on small screens */
+  .el-radio-button__inner {
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+  }
+}

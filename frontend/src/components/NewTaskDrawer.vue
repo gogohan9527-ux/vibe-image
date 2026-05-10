@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { useIsMobile } from '@/composables/useMobile';
 import {
   ElDrawer,
   ElInput,
@@ -32,6 +33,7 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>();
 const taskStore = useTaskStore();
 const providerStore = useProviderStore();
 const router = useRouter();
+const { isMobile } = useIsMobile();
 
 type Quality = 'low' | 'medium' | 'high' | 'auto';
 
@@ -268,8 +270,8 @@ async function submit(): Promise<void> {
 <template>
   <ElDrawer
     :model-value="open"
-    direction="rtl"
-    size="480px"
+    :direction="isMobile ? 'btt' : 'rtl'"
+    :size="isMobile ? '92%' : '480px'"
     :with-header="false"
     :before-close="(done) => { close(); done(); }"
     class="new-task-drawer"
@@ -599,5 +601,41 @@ async function submit(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Mobile bottom-sheet tweaks */
+@media (max-width: 767px) {
+  .drawer-content {
+    border-radius: 16px 16px 0 0;
+    overflow: hidden;
+  }
+
+  .drawer-head {
+    padding: 16px 16px 10px;
+  }
+
+  /* Visual drag handle */
+  .drawer-head::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    background: #d1d5db;
+    border-radius: 2px;
+    margin: 0 auto 12px;
+  }
+
+  .form {
+    padding: 12px 16px;
+  }
+
+  .drawer-foot {
+    padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .ratio-group {
+    flex-wrap: wrap;
+  }
 }
 </style>

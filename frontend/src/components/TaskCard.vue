@@ -385,4 +385,35 @@ async function copyError(): Promise<void> {
   font-size: 13px;
   color: var(--vi-text-faint);
 }
+
+/* Mobile: collapse 4-column grid to 2-column */
+@media (max-width: 767px) {
+  .task-card {
+    grid-template-columns: 44px 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  /* thumb column wraps below body */
+  .task-thumbs {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  /* side (ETA + actions) stays in col 3 */
+  .task-side {
+    grid-row: 1;
+  }
+
+  .task-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .task-thumb {
+    width: 100px;
+    height: 64px;
+  }
+}
 </style>

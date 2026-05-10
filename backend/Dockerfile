@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app/backend
 
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 COPY backend /app/backend
 COPY config/config.example.yaml /app/config/config.example.yaml
