@@ -12,6 +12,7 @@ import {
   ElButton,
   ElMessage,
   ElTooltip,
+  ElEmpty,
 } from 'element-plus';
 import { Search, Download, RefreshLeft, Delete, CopyDocument, WarningFilled } from '@element-plus/icons-vue';
 import { ElMessageBox } from 'element-plus';
@@ -20,6 +21,9 @@ import PreviewImage from '@/components/PreviewImage.vue';
 import type { CreateTaskRequest, HistoryStatusFilter, TaskItem } from '@/types/api';
 import { useTaskStore } from '@/stores/useTaskStore';
 import { formatDateTime } from '@/utils/format';
+import { useIsMobile } from '@/composables/useMobile';
+
+const { isMobile } = useIsMobile();
 
 const search = ref('');
 const status = ref<HistoryStatusFilter>('all');
@@ -211,9 +215,10 @@ function isLegacy(row: TaskItem): boolean {
       </div>
     </header>
 
-    <div class="table-wrap">
+    <!-- Desktop table -->
+    <div v-if="!isMobile" class="table-wrap">
       <ElTable :data="items" v-loading="loading" stripe style="width: 100%" row-key="id">
-        <ElTableColumn label="输入图" width="64" align="center">
+        <ElTableColumn label="输入图" width="100" align="center">
           <template #default="{ row }: { row: TaskItem }">
             <div v-if="row.input_image_url" class="input-thumb">
               <PreviewImage :src="row.input_image_url" alt="input" />
@@ -319,14 +324,57 @@ function isLegacy(row: TaskItem): boolean {
       </ElTable>
     </div>
 
-    <div class="pagination">
+    <!-- Mobile card list -->
+    <template v-else>
+      <div v-if="loading" class="mobile-loading">加载中…</div>
+      <ElEmpty v-else-if="items.length === 0" description="暂无记录" />
+      <div v-else class="mobile-list">
+        <div v-for="row in items" :key="row.id" class="mobile-card">
+          <div class="mc-top">
+            <div v-if="row.input_image_url" class="mc-input-thumb">
+              <PreviewImage :src="row.input_image_url" alt="input" />
+            </div>
+            <div class="mc-thumb">
+              <PreviewImage :src="row.image_url" alt="thumbnail" />
+            </div>
+            <div class="mc-info">
+              <p class="mc-prompt">{{ row.title || row.prompt }}</p>
+              <div class="mc-meta">
+                <ElTag size="small" :type="statusMeta(row.status).type" effect="light" round>
+                  {{ statusMeta(row.status).label }}
+                </ElTag>
+                <span class="mc-time">{{ formatDateTime(row.finished_at ?? row.created_at) }}</span>
+              </div>
+              <div v-if="row.status === 'failed' && row.error_message" class="mc-error">
+                <ElIcon color="#ef4444"><WarningFilled /></ElIcon>
+                <span>{{ row.error_message }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="mc-actions">
+            <ElButton size="small" link type="primary" :disabled="!row.image_url" @click="onDownload(row)">
+              <ElIcon><Download /></ElIcon>下载
+            </ElButton>
+            <ElButton size="small" link type="primary" @click="onRegenerate(row)">
+              <ElIcon><RefreshLeft /></ElIcon>重新生成
+            </ElButton>
+            <ElButton size="small" link type="danger" @click="onDelete(row)">
+              <ElIcon><Delete /></ElIcon>删除
+            </ElButton>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <div class="pagination" :class="{ 'pagination-mobile': isMobile }">
       <ElPagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
         :total="totalForPager"
         :page-sizes="[10, 20, 50]"
-        layout="total, sizes, prev, pager, next, jumper"
+        :layout="isMobile ? 'prev, pager, next' : 'total, sizes, prev, pager, next, jumper'"
         background
+        :pager-count="isMobile ? 5 : 7"
       />
     </div>
   </div>
@@ -393,8 +441,8 @@ function isLegacy(row: TaskItem): boolean {
 }
 
 .input-thumb {
-  width: 40px;
-  height: 40px;
+  width: 72px;
+  height: 72px;
   border-radius: 6px;
   overflow: hidden;
   background: #f1f3f8;
@@ -484,12 +532,8 @@ function isLegacy(row: TaskItem): boolean {
   font-size: 13px;
 }
 
-/* Mobile: allow table to scroll horizontally */
+/* Mobile */
 @media (max-width: 767px) {
-  .table-wrap {
-    overflow-x: auto;
-  }
-
   .filters {
     flex-wrap: wrap;
   }
@@ -502,9 +546,110 @@ function isLegacy(row: TaskItem): boolean {
   .status-select {
     width: 120px;
   }
+}
 
-  .pagination {
-    justify-content: center;
-  }
+.pagination-mobile {
+  justify-content: center;
+}
+
+/* Mobile card list */
+.mobile-loading {
+  text-align: center;
+  padding: 32px;
+  color: var(--vi-text-muted);
+  font-size: 14px;
+}
+
+.mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-card {
+  background: var(--vi-card-bg);
+  border: 1px solid var(--vi-border);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: var(--vi-shadow);
+}
+
+.mc-top {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.mc-input-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f3f8;
+  border: 1px solid var(--vi-border);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.mc-thumb {
+  width: 72px;
+  height: 72px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f1f3f8;
+  flex-shrink: 0;
+}
+
+.mc-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mc-prompt {
+  margin: 0;
+  font-size: 13px;
+  color: var(--vi-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+.mc-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mc-time {
+  font-size: 11px;
+  color: var(--vi-text-faint);
+}
+
+.mc-error {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--vi-danger);
+  overflow: hidden;
+}
+
+.mc-error span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mc-actions {
+  display: flex;
+  gap: 4px;
+  border-top: 1px solid var(--vi-border);
+  padding-top: 8px;
 }
 </style>

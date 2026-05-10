@@ -11,9 +11,13 @@ import {
   ElTable,
   ElTableColumn,
   ElTooltip,
+  ElEmpty,
 } from 'element-plus';
 import { ApiError, createPrompt, deletePrompt, listPrompts, updatePrompt } from '@/api/client';
 import type { PromptItem } from '@/types/api';
+import { useIsMobile } from '@/composables/useMobile';
+
+const { isMobile } = useIsMobile();
 
 const templates = ref<PromptItem[]>([]);
 const loading = ref(false);
@@ -112,7 +116,8 @@ function formatDate(dt: string): string {
       <ElButton type="primary" @click="openCreateDialog">新建模板</ElButton>
     </header>
 
-    <ElTable :data="templates" v-loading="loading" stripe class="templates-table">
+    <!-- Desktop table -->
+    <ElTable v-if="!isMobile" :data="templates" v-loading="loading" stripe class="templates-table">
       <ElTableColumn prop="title" label="名称" width="200" />
       <ElTableColumn label="提示词预览" min-width="300">
         <template #default="{ row }">
@@ -154,6 +159,38 @@ function formatDate(dt: string): string {
         </template>
       </ElTableColumn>
     </ElTable>
+
+    <!-- Mobile card list -->
+    <template v-else>
+      <div v-if="loading" class="mobile-loading">加载中…</div>
+      <ElEmpty v-else-if="templates.length === 0" description="暂无模板" />
+      <div v-else class="mobile-list">
+        <div v-for="row in templates" :key="row.id" class="mobile-card">
+          <div class="mc-title">{{ row.title }}</div>
+          <p class="mc-preview">{{ formatPreview(row.prompt) }}</p>
+          <div class="mc-footer">
+            <span class="mc-date">{{ formatDate(row.created_at) }}</span>
+            <div class="mc-actions">
+              <ElButton size="small" @click="openEditDialog(row)">编辑</ElButton>
+              <ElPopconfirm
+                title="确定删除该模板吗？"
+                confirm-button-text="删除"
+                cancel-button-text="取消"
+                @confirm="handleDelete(row)"
+              >
+                <template #reference>
+                  <ElButton
+                    size="small"
+                    type="danger"
+                    :disabled="row.id === 'sample'"
+                  >删除</ElButton>
+                </template>
+              </ElPopconfirm>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <ElDialog
       v-model="dialogVisible"
@@ -200,6 +237,12 @@ function formatDate(dt: string): string {
   gap: 16px;
 }
 
+@media (max-width: 767px) {
+  .templates-view {
+    padding: 0;
+  }
+}
+
 .view-head {
   display: flex;
   align-items: center;
@@ -225,5 +268,65 @@ function formatDate(dt: string): string {
   text-overflow: ellipsis;
   display: block;
   max-width: 280px;
+}
+
+/* Mobile cards */
+.mobile-loading {
+  text-align: center;
+  padding: 32px;
+  color: var(--vi-text-muted);
+  font-size: 14px;
+}
+
+.mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-card {
+  background: var(--vi-card-bg);
+  border: 1px solid var(--vi-border);
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: var(--vi-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mc-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--vi-text);
+}
+
+.mc-preview {
+  margin: 0;
+  font-size: 13px;
+  color: var(--vi-text-muted);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mc-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--vi-border);
+}
+
+.mc-date {
+  font-size: 11px;
+  color: var(--vi-text-faint);
+}
+
+.mc-actions {
+  display: flex;
+  gap: 6px;
 }
 </style>
