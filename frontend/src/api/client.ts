@@ -1,3 +1,4 @@
+import { getDemoToken, isDemoDenied } from '@/composables/useDemoGuard';
 import type {
   AddKeyRequest,
   AddKeyResponse,
@@ -46,10 +47,15 @@ function isErrorBody(value: unknown): value is ErrorBody {
   return typeof value === 'object' && value !== null && typeof (value as { code?: unknown }).code === 'string';
 }
 
+function demoHeaders(): Record<string, string> {
+  const token = getDemoToken();
+  return token ? { 'X-Demo-Token': token } : {};
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...demoHeaders() },
   };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -72,6 +78,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   if (!res.ok) {
+    if (isErrorBody(parsed) && parsed.code === 'demo_required') {
+      isDemoDenied.value = true;
+    }
     if (isErrorBody(parsed)) {
       throw new ApiError(res.status, parsed);
     }
@@ -95,7 +104,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export async function uploadTempImage(file: File): Promise<TempUploadResponse> {
   const fd = new FormData();
   fd.append('file', file);
-  const res = await fetch('/api/uploads/temp', { method: 'POST', body: fd });
+  const res = await fetch('/api/uploads/temp', { method: 'POST', body: fd, headers: { ...demoHeaders() } });
 
   if (res.status === 204) {
     throw new ApiError(res.status, { code: 'http_error', message: 'Empty response' });
@@ -255,4 +264,9 @@ export function refreshProviderModels(
     `/api/providers/${encodeURIComponent(providerId)}/models/refresh`,
     body,
   );
+}
+
+// --- Health ---
+export function getHealth(): Promise<{ status: string }> {
+  return request<{ status: string }>('GET', '/api/health');
 }

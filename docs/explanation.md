@@ -466,3 +466,69 @@ class HttpCall:
 - 错误信息中**不**回显完整文件名给前端（仅返回 sha1 短哈希），避免暴露文件系统细节。
 - 上传接口暂不做速率限制（本期单机工具，留作下个工单）。
 
+---
+
+## 2026-05-10 Addendum — Demo Token 鉴权工程约定
+
+> 本次迭代新增工程约定。前期所有 §1–§11 与前几轮 Addendum 仍然有效；本节仅补充。
+> 需求详情：[prd.md §2026-05-10 Addendum](prd.md)。
+
+### C.1 新增 / 调整目录
+
+```
+backend/app/
+  main.py                  # 改：+DemoAuthMiddleware, +_init_demo_token
+backend/tests/
+  test_demo_auth.py        # 新增：middleware 单测
+
+frontend/src/
+  composables/
+    useDemoGuard.ts        # 新增：isDemoDenied ref + token 工具函数
+  api/
+    client.ts              # 改：+demoHeaders(), +getHealth(), demo_required 处理
+  composables/
+    useTaskStream.ts       # 改：SSE URL 带 ?demo_token
+  App.vue                  # 改：挂载时读 URL token + health check + 遮罩
+
+data/
+  demo_token.txt           # 自动生成（gitignored）
+```
+
+### C.2 Lane 与所有权（本轮）
+
+| Lane | 新增可写 | 注意 |
+|------|---------|------|
+| **Backend Agent** | `backend/app/main.py`（已部分改）、`backend/tests/test_demo_auth.py`（新建）、`docs/interface.draft.md`（**本轮 contract gate**） | 不动 `frontend/**` |
+| **Frontend Agent** | `frontend/src/composables/useDemoGuard.ts`（已建）、`frontend/src/api/client.ts`（已部分改）、`frontend/src/composables/useTaskStream.ts`、`frontend/src/App.vue` | 不动 `backend/**`、`docs/interface.md` |
+
+**已完成项（本轮启动前已做）：**
+- 后端：`main.py` 已加 `_init_demo_token` + `DemoAuthMiddleware` + 注册中间件；`config.example.yaml` 已加说明注释。
+- 前端：`useDemoGuard.ts` 已创建；`client.ts` 已加 `demoHeaders()` 并注入到 `request<T>`。
+
+### C.3 Token 规则
+
+- Token 字符集：`secrets.token_urlsafe(32)`（URL-safe base64，43 字符）。
+- 持久化路径：`config.database_path.parent / "demo_token.txt"`（与 db 同目录）。
+- 固定方式：`config.yaml` 中 `secret_key: "your-token"` 即可覆盖自动生成。
+- `data/demo_token.txt` 必须在 `.gitignore` 中（检查一下）。
+
+### C.4 前端安全边界
+
+- Token 只存 `localStorage`，不写 cookie，不进任何日志 / 响应体。
+- `isDemoDenied.value = true` 后，遮罩必须覆盖整个 viewport，包括 `<AppSidebar>` 和 `<RouterView>`，不可绕过。
+- `getHealth()` 是唯一的"前置检查"调用；其他 API 失败时也可触发 `isDemoDenied` 以防漏网。
+
+### C.5 测试期望（本轮新增）
+
+| 范围 | 内容 |
+|------|------|
+| `test_demo_auth.py` | normal 模式不拦截；demo 模式无 token 返回 401 `demo_required`；header 正确返回 200；query param 正确返回 200；OPTIONS 放行；非 /api/ 路径放行 |
+| Frontend | `npm run build` 类型通过；手动 smoke：带 token URL → 正常使用；无 token → 遮罩展示 |
+
+### C.6 本轮 contract 流程
+
+1. Backend lane 完成 `main.py` 改动的测试 + 写 `docs/interface.draft.md`（包含 `401 demo_required` 响应 schema、`X-Demo-Token` header 说明、`?demo_token` query param 说明）。
+2. Backend lane 勾选 contract 行 → orchestrator 检测 gate → 启动 Frontend lane。
+3. Frontend lane 读 `docs/interface.draft.md`。
+4. Phase C 由 orchestrator 合并 draft 入 `interface.md`。
+

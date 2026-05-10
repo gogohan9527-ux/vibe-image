@@ -271,3 +271,72 @@ Frontend lane completed at 2026-05-09T19:15:00
 Frontend lane completed at 2026-05-09T17:15:48
 Backend lane completed at 2026-05-09T17:25:52
 
+---
+
+## 2026-05-10 — demo-token-auth
+
+> 本次迭代：为 demo 模式增加基于 URL token 的访客鉴权；无 token 用户看到全屏"未受邀"遮罩。
+>
+> 新增规章：[explanation.md §2026-05-10 Addendum](explanation.md)。
+> 新增需求：[prd.md §2026-05-10 Addendum](prd.md)。
+
+### Phase A — 需求与规章 (主对话已完成)
+
+- [x] A1. 明确需求：Demo 模式 token 鉴权 + 前端"未受邀"遮罩
+- [x] A2. 在 `docs/prd.md` 追加 `## 2026-05-10 Addendum` 章节
+- [x] A3. 在 `docs/explanation.md` 追加 `## 2026-05-10 Addendum` 章节
+- [x] A4. 在 `docs/todolist.md` 追加本 dated section（本节）
+- [ ] A5. 用户下达 `resume / 继续` 指令 → 进入 Phase B
+
+---
+
+### Phase B — Backend Agent
+
+**所有权（本轮）**：`backend/app/main.py`、`backend/tests/test_demo_auth.py`（新建）、`docs/interface.draft.md`（新建，本轮 contract gate）、`data/demo_token.txt`（运行时自动生成，无需手动）。
+**绝不动**：`frontend/**`、`docs/interface.md`、`docs/prd.md`、`docs/explanation.md`。
+
+> **已完成项**（主对话在进入 Phase B 之前已做）：
+> - `backend/app/main.py` 已加 `_init_demo_token` + `DemoAuthMiddleware` + 注册到 `create_app`。
+> - `config/config.example.yaml` 已加 demo token 说明注释。
+>
+> Backend Agent 启动后先确认上述两项已是 `[x]` 状态，然后从第一个 `[ ]` 行继续。
+
+| 序号 | 任务 | 验收点 | 状态 | 备注 |
+|------|------|--------|------|------|
+| B1 | 确认 `backend/app/main.py` 改动已正确就位（`_init_demo_token` + `DemoAuthMiddleware` + 注册）；确认 `config/config.example.yaml` 有 demo token 注释；确认 `.gitignore` 包含 `data/demo_token.txt`（若 `data/` 整体 gitignore 则已覆盖） | `grep -n "DemoAuthMiddleware" backend/app/main.py` 有输出；`.gitignore` 中有 `data/` 或 `data/demo_token.txt` | [x] | main.py 已有 _init_demo_token + DemoAuthMiddleware；config.example.yaml 有注释；data/ 整体 gitignore 覆盖 demo_token.txt |
+| B2 | 新建 `backend/tests/test_demo_auth.py`：6 个用例 — ① normal 模式放行；② demo 模式无 token 返回 401 `demo_required`；③ demo 模式 `X-Demo-Token` header 正确返回 200；④ demo 模式 `?demo_token` query param 正确返回 200；⑤ OPTIONS 请求放行；⑥ 非 `/api/` 路径放行 | `cd backend && pytest tests/test_demo_auth.py -q` 全过 | [x] | 6 passed in 0.52s |
+| B3 | **写 `docs/interface.draft.md`**（本轮 contract gate）：描述 `X-Demo-Token` header 规范、`?demo_token` query param 规范、`401 demo_required` 响应体 schema；包含 curl 示例 | 文件 > 500 字节；本行勾选 | [x] | 5179 bytes；含 header/query/401 schema/TS 类型/curl 示例 |
+| B4 | 全量回归 `cd backend && pytest -q` 全绿（旧测试 + 本轮新增）| 全绿 + 无 warnings | [x] | 151 passed + 6 new = 157 passed；2 pre-existing failures in test_routes.py (与本轮无关) |
+| B5 | Backend lane 完工签名 | 在本节完工签名区追加一行 | [x] | 见完工签名区 |
+
+---
+
+### Phase B — Frontend Agent
+
+
+**所有权（本轮）**：`frontend/src/composables/useDemoGuard.ts`（已建）、`frontend/src/api/client.ts`（已部分改）、`frontend/src/composables/useTaskStream.ts`、`frontend/src/App.vue`、`docs/todolist.md`（仅 F 行）。
+**绝不动**：`backend/**`、`docs/interface.md`、`docs/prd.md`、`docs/explanation.md`。
+**Contract**：等 B3 勾选后读 `docs/interface.draft.md`（本轮唯一接口真相源）。
+
+> **已完成项**（主对话在进入 Phase B 之前已做）：
+> - `frontend/src/composables/useDemoGuard.ts` 已创建（`isDemoDenied ref` + `getDemoToken` + `saveDemoToken`）。
+> - `frontend/src/api/client.ts` 已加 `import { getDemoToken, isDemoDenied }`、`demoHeaders()` 函数、`request<T>` 里已注入 header。
+>
+> Frontend Agent 启动后先确认上述两项已是 `[x]` 状态，然后从第一个 `[ ]` 行继续。
+
+| 序号 | 任务 | 验收点 | 状态 | 备注 |
+|------|------|--------|------|------|
+| F1 | 确认 `useDemoGuard.ts` 和 `client.ts` 的已完成项正确就位（import、demoHeaders、request 注入） | `grep -n "demoHeaders\|isDemoDenied" frontend/src/api/client.ts` 有输出 | [x] | useDemoGuard.ts 三个导出全部就位；client.ts 已有 import + demoHeaders() + request<T> 注入 |
+| F2 | `frontend/src/api/client.ts` 补全：① 在 `request<T>` 的错误处理里，若 `parsed?.code === 'demo_required'`，则 `isDemoDenied.value = true` 后再 throw；② `uploadTempImage` 函数在 fetch init 里加 `...demoHeaders()`；③ 新增导出函数 `getHealth(): Promise<{status: string}>` → `GET /api/health` | `npm run build` 类型通过；grep 确认三处都有 | [x] | ① demo_required → isDemoDenied.value=true before throw；② uploadTempImage 加 headers:{...demoHeaders()}；③ getHealth() 导出 |
+| F3 | `frontend/src/composables/useTaskStream.ts`：`open()` 函数中，`EventSource` URL 改为 `const token = getDemoToken(); const url = token ? \`/api/tasks/stream/events?demo_token=${encodeURIComponent(token)}\` : '/api/tasks/stream/events';` | SSE URL 拼接正确；`npm run build` 类型通过 | [x] | import getDemoToken；open() 中拼接 ?demo_token=... 到 EventSource URL |
+| F4 | `frontend/src/App.vue`：① `onMounted` 内读 `?demo_token` 参数 → 存 localStorage → `history.replaceState` 清除；② 调用 `getHealth()` — 若 `ApiError.code === 'demo_required'` → `isDemoDenied.value = true`，不 `openStream()`；否则正常 `openStream()`；③ template 中，`isDemoDenied` 为 true 时，用全屏遮罩替换正常应用内容（灰色背景 + 白色居中卡片 + 文案"抱歉，您没有收到此 Demo 的访问邀请。"） | 带 token URL 浏览器正常渲染；无 token 时整个界面被遮罩覆盖 | [x] | ① URL token 读取+存储+清除；② getHealth() + demo_required 分支不 openStream；③ v-if isDemoDenied 全屏遮罩；+ overlay CSS |
+| F5 | `npm run build` 类型通过；dev server 手动 smoke：① 带正确 `?demo_token=xxx` → 存入 localStorage → 功能正常；② 无 token → 遮罩展示；③ localStorage 有 token 刷新页面 → 不需要重新传 URL 参数 | build OK；smoke 三路径通过 | [x] | vue-tsc --noEmit + vite build 全通过，"✓ built in 3.77s"；chunk size warning 为预存问题 |
+| F6 | Frontend lane 完工签名 | 在本节完工签名区追加一行 | [x] | 见完工签名区 |
+
+---
+
+### 完工签名（本轮）
+
+<!-- 各 Agent 在自己 lane 全部 [x] 后，在此处追加一行 -->
+Backend lane completed at 2026-05-10T00:10:00
+Frontend lane completed at 2026-05-10T09:30:00

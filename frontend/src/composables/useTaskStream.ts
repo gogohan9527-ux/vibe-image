@@ -4,6 +4,7 @@ import type {
   SseTerminalEvent,
 } from '@/types/api';
 import { useTaskStore } from '@/stores/useTaskStore';
+import { getDemoToken } from '@/composables/useDemoGuard';
 
 let source: EventSource | null = null;
 
@@ -20,7 +21,11 @@ export function useTaskStream(): { open: () => void; close: () => void } {
 
   function open(): void {
     if (source) return;
-    const es = new EventSource('/api/tasks/stream/events');
+    const token = getDemoToken();
+    const url = token
+      ? `/api/tasks/stream/events?demo_token=${encodeURIComponent(token)}`
+      : '/api/tasks/stream/events';
+    const es = new EventSource(url);
 
     es.addEventListener('hello', () => {
       // Pull the current snapshot once we know the stream is live

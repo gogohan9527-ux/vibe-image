@@ -96,3 +96,4 @@ llm_outputs/
 
 # TLS certs
 certs/
+docker/certs/

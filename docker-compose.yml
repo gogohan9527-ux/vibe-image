@@ -7,7 +7,8 @@ services:
     restart: unless-stopped
     environment:
       # Run mode: "normal" (SQLite + AES-GCM at-rest) or "demo" (in-memory).
-      VIBE_MODE: normal
+      # Override via shell: VIBE_MODE=demo docker compose up -d --build
+      VIBE_MODE: ${VIBE_MODE:-normal}
       # Optional master key. When unset, data/master.key is generated on
       # first run. Hex (64 chars) or base64 (44 chars) for 32 bytes.
       # VIBE_SECRET_KEY: ""

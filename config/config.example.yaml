@@ -7,6 +7,12 @@ mode: normal
 # When unset, the backend reads/writes data/master.key automatically.
 # Override with env: VIBE_SECRET_KEY=...
 # secret_key: ""
+#
+# Demo mode access token.
+# When mode=demo and secret_key is unset, the backend auto-generates a token
+# on first startup and persists it to data/demo_token.txt.
+# Set secret_key to pin a specific token instead.
+# Share the URL as: http://<host>:<port>?demo_token=<token>
 
 server:
   host: "127.0.0.1"

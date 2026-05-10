@@ -20,7 +20,7 @@ cp config/config.example.yaml config/config.yaml
 
 #### 首次启动
 
-```sh
+```powershell｜sh
 cd backend
 python -m app.scripts.init_db
 ```
@@ -107,15 +107,26 @@ docker compose up -d --build
 
 ### Demo 模式启动
 
-```sh
-VIBE_MODE=demo docker compose up -d --build           # Linux / macOS / WSL
+```powershell
+$env:VIBE_MODE="demo"; docker compose up -d --build
 ```
+
+```sh
+VIBE_MODE=demo docker compose up -d --build
+```
+
+获取 demo 访问邀请链接：
 
 ```powershell
-$env:VIBE_MODE="demo"; docker compose up -d --build   # Windows PowerShell
+$token = docker compose logs backend | Select-String 'Demo mode' | ForEach-Object { $_ -replace '.*access token: ', '' }
+Write-Host "http://localhost:8080/?demo_token=$token"
 ```
 
 ```sh
+echo "http://localhost:8080/?demo_token=$(docker compose logs backend | grep 'Demo mode' | sed 's/.*access token: //')"
+```
+
+```powershell｜sh
 docker compose logs -f backend     # 日志
 docker compose down                # 停止
 docker compose up -d --build       # 重建

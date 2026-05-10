@@ -502,3 +502,101 @@ defaults:
 - [ ] `pytest backend/tests/` 全绿（含本轮 + 旧测试）。
 - [ ] `npm run build` 类型通过。
 
+---
+
+## 2026-05-10 Addendum — Demo 模式 Token 鉴权
+
+> 本次迭代：为 `mode: demo` 启动时增加基于 URL token 的访客鉴权，未持有 token 的用户无法访问任何功能，前端展示"未受邀"遮罩。
+>
+> 计划：在 `docs/todolist.md § 2026-05-10 demo-token-auth` 中追踪。
+
+### C.1 背景
+
+`mode: demo` 已存在，用于演示时用内存 ProviderStore。但此前任何人访问服务都可以正常操作。需要增加一层"邀请码"管控：管理员启动后拿到唯一 URL，把 URL 分享给演示访客；没有 token 的人直接看到拒绝页，不暴露任何功能。
+
+### C.2 新增目标
+
+| 序号 | 目标 |
+|------|------|
+| G15 | 后端 `mode: demo` 时，所有 `/api/*` 请求必须携带有效 token，否则 HTTP 401 |
+| G16 | Token 由后端首次启动自动生成并持久化到 `data/demo_token.txt`，也可通过 `secret_key` 固定 |
+| G17 | 前端从 URL `?demo_token=` 读取 token → 存 localStorage → 自动附加到每次 API 请求 |
+| G18 | 无 token 或 token 无效时，前端展示全屏"未受邀"遮罩，不渲染任何业务内容 |
+
+### C.3 非目标
+
+- 不做多 token / 多用户。
+- 不做 token 过期与轮换。
+- 不做 normal 模式下的任何鉴权。
+- 不修改任何业务逻辑（任务/历史/模板等）。
+
+### C.4 功能需求
+
+#### C.4.1 后端 — Token 生命周期
+
+- `mode != demo`：中间件透明跳过，无任何影响。
+- `mode == demo`：
+  - 启动时 `_init_demo_token(config)`：
+    - 若 `config.secret_key` 非空 → 直接用它。
+    - 否则读 `data/demo_token.txt`；不存在则 `secrets.token_urlsafe(32)` 生成并写入文件。
+  - Token 打印到日志：`Demo mode active — access token: <token>`
+  - `app.state.demo_token` 保存 token（`None` 表示非 demo 模式）。
+
+#### C.4.2 后端 — 鉴权中间件
+
+`DemoAuthMiddleware`（Starlette `BaseHTTPMiddleware`）：
+- 非 demo 模式 → 直接放行。
+- `OPTIONS` 请求（CORS preflight）→ 直接放行。
+- 非 `/api/` 前缀路径 → 直接放行（静态资源由其他层处理）。
+- 否则检查 `X-Demo-Token` header 或 `?demo_token` query param：
+  - 命中且等于 `app.state.demo_token` → 放行。
+  - 否则 → `HTTP 401 {"code": "demo_required", "message": "未获得 Demo 访问权限"}`。
+- `CORS allow_headers` 显式加 `X-Demo-Token`。
+
+#### C.4.3 前端 — Token 管理
+
+挂载时（`App.vue onMounted`）：
+1. 读 `window.location.search` 中的 `demo_token` 参数。
+2. 存在 → 写 `localStorage.setItem('demo_token', value)` → `history.replaceState` 清除 URL 参数。
+3. 调用 `getHealth()`（`GET /api/health`，带 `X-Demo-Token` header）：
+   - `ApiError.code === 'demo_required'` → 设 `isDemoDenied = true`，停止后续初始化（不开 SSE）。
+   - 其他错误或成功 → 正常启动 SSE 流。
+
+#### C.4.4 前端 — 请求注入
+
+`client.ts`：
+- 所有 `request<T>` 调用自动加 `X-Demo-Token: <localStorage token>` header（token 存在时）。
+- `uploadTempImage` 同样加此 header（FormData 请求）。
+- 任何请求收到 `401 demo_required` → 设 `isDemoDenied.value = true`。
+- 新增 `getHealth(): Promise<{status: string}>` 方法。
+
+#### C.4.5 前端 — SSE 流
+
+`useTaskStream.ts`：
+- EventSource 不支持自定义 header，改为在 URL 后追加 `?demo_token=<encodeURIComponent(token)>`（token 存在时）。
+
+#### C.4.6 前端 — 拒绝遮罩 UI
+
+`App.vue`：
+- `isDemoDenied.value === true` 时，替换整个应用内容为全屏遮罩：
+  - 灰色/模糊背景覆盖全页。
+  - 居中白色卡片，展示锁图标 + 标题"Demo 演示模式" + 说明"抱歉，您没有收到此 Demo 的访问邀请。请联系管理员获取访问链接。"
+  - 使用 Element Plus 组件风格，与应用整体一致。
+
+### C.5 错误语义
+
+| HTTP | code | 触发 |
+|------|------|------|
+| 401 | `demo_required` | demo 模式下无有效 token |
+
+### C.6 验收标准
+
+- [ ] `mode: normal` 启动，所有路由不受影响，无任何 token 校验。
+- [ ] `mode: demo` 启动，日志打印 token；`data/demo_token.txt` 写入；重启不变。
+- [ ] 携带正确 `X-Demo-Token` header 的请求正常通过。
+- [ ] 无 token 的请求返回 `HTTP 401 {"code": "demo_required", ...}`。
+- [ ] 前端打开 `?demo_token=xxx` → token 存入 localStorage → URL 清除 → 正常使用。
+- [ ] 前端无 token 或 token 错误 → 全屏遮罩展示"未受邀"提示，无任何业务 UI 可见。
+- [ ] `pytest backend/tests/` 全绿（含新增 `test_demo_auth.py`）。
+- [ ] `npm run build` 类型通过。
+

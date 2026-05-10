@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .api import config as config_routes
 from .api import history as history_routes
@@ -54,6 +56,24 @@ def _build_provider_store(config: AppConfig, storage: Storage):
     return SqliteProviderStore(conn=storage._conn, secret_box=secret_box)
 
 
+def _init_demo_token(config: AppConfig) -> str | None:
+    """Generate or load the demo access token. Returns None if not demo mode."""
+    if config.mode != "demo":
+        return None
+    if config.secret_key:
+        token = config.secret_key
+    else:
+        token_file = config.database_path.parent / "demo_token.txt"
+        if token_file.exists():
+            token = token_file.read_text(encoding="utf-8").strip()
+        else:
+            token = secrets.token_urlsafe(32)
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(token, encoding="utf-8")
+    logger.info("Demo mode active — access token: %s", token)
+    return token
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     config: AppConfig = app.state.config
@@ -69,11 +89,34 @@ async def _lifespan(app: FastAPI):
     app.state.task_manager = manager
     app.state.crypto = crypto
     app.state.provider_store = provider_store
+    app.state.demo_token = _init_demo_token(config)
     try:
         yield
     finally:
         manager.shutdown()
         storage.close()
+
+
+class DemoAuthMiddleware(BaseHTTPMiddleware):
+    """Blocks all /api/* requests unless a valid demo token is provided."""
+
+    async def dispatch(self, request: Request, call_next):
+        config: AppConfig = request.app.state.config
+        if config.mode != "demo":
+            return await call_next(request)
+        if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
+            return await call_next(request)
+
+        token = request.headers.get("X-Demo-Token") or request.query_params.get(
+            "demo_token"
+        )
+        valid = getattr(request.app.state, "demo_token", None)
+        if not valid or token != valid:
+            return JSONResponse(
+                status_code=401,
+                content={"code": "demo_required", "message": "未获得 Demo 访问权限"},
+            )
+        return await call_next(request)
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -93,8 +136,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         allow_origins=config.server.cors_origins or ["*"],
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*", "X-Demo-Token"],
     )
+    app.add_middleware(DemoAuthMiddleware)
 
     app.include_router(tasks_routes.router, prefix="/api")
     app.include_router(prompts_routes.router, prefix="/api")

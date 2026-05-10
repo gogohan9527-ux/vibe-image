@@ -1064,3 +1064,84 @@ export interface TempUploadResponse {
 | POST | `/api/tasks` | v2 + img2img 增量字段（§11.2）|
 | GET | `/api/providers` | 新增 `supports_image_input` 字段（§11.4） |
 | 其余 §10.8 端点 | | 不变 |
+
+---
+
+## §12 Demo 模式 Token 鉴权协议 **[v1 — 自 2026-05-10]**
+
+> 本节为横切关注点（cross-cutting concern），不增加新端点。仅在 `mode: demo` 时生效；`mode: normal` 时本节协议完全不激活。
+
+### 12.1 概述
+
+`mode: demo` 启动时，后端 `DemoAuthMiddleware` 拦截所有 `/api/*` 请求，要求携带有效 demo token。无效或缺失 token 返回 `HTTP 401`。
+
+### 12.2 Token 传递方式
+
+客户端从以下两种方式中选一种传递：
+
+**方式 A — HTTP Header（推荐，用于普通 fetch 请求）**
+```
+X-Demo-Token: <token>
+```
+
+**方式 B — Query Parameter（EventSource/SSE 必须用此方式）**
+```
+?demo_token=<token>
+```
+
+两种方式等价；中间件先查 Header，再查 Query Param。
+
+### 12.3 豁免（demo 模式下无需 token）
+
+- `OPTIONS` 请求（CORS preflight）— 始终放行
+- 不以 `/api/` 开头的路径（如 `/images/...`、`/`）— 不检查
+
+### 12.4 401 响应体
+
+```json
+{
+  "code": "demo_required",
+  "message": "未获得 Demo 访问权限"
+}
+```
+
+### 12.5 受保护端点
+
+§10.8 + §11.8 中所有 `/api/*` 端点均受保护。关键端点的 token 传递方式：
+
+| Endpoint | Token 方式 |
+|----------|-----------|
+| 所有 `GET/POST/PUT/DELETE /api/*` | Header `X-Demo-Token` |
+| `GET /api/tasks/stream/events` (SSE) | **Query Param** `?demo_token=` |
+
+### 12.6 TypeScript 类型
+
+无新端点。`ErrorBody.code` 可取值 `"demo_required"`：
+
+```typescript
+if (error instanceof ApiError && error.code === 'demo_required') {
+  isDemoDenied.value = true;  // 展示全屏"未受邀"遮罩
+}
+```
+
+### 12.7 curl 示例
+
+```bash
+# 携带 Header（demo 模式）
+curl -H "X-Demo-Token: your-token" http://localhost:8000/api/health
+# → {"status": "ok"}
+
+# SSE 流携带 query param
+curl "http://localhost:8000/api/tasks/stream/events?demo_token=your-token"
+
+# 无 token → 401
+curl http://localhost:8000/api/health
+# → {"code":"demo_required","message":"未获得 Demo 访问权限"}
+```
+
+### 12.8 Token 管理（后端参考）
+
+- 首次 demo 模式启动自动生成，存入 `data/demo_token.txt`（gitignored）
+- `config.yaml` 设置 `secret_key: "your-token"` 可固定 token
+- 启动日志打印：`Demo mode active — access token: <token>`
+- 分享 URL 格式：`http://<host>:<frontend-port>?demo_token=<token>`

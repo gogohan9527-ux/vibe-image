@@ -8,9 +8,7 @@ venv
 node_modules
 frontend/dist
 frontend/node_modules
-data/*.db
-data/*.db-shm
-data/*.db-wal
+data/
 images/*
 !images/.gitkeep
 config/config.yaml
