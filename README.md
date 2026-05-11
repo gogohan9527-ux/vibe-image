@@ -64,6 +64,17 @@ pytest -q
 - 生成的图片落到 `images/generated_<task_id>.<ext>`。
 - 提示词模板种子文件在 `prompt/prompt_*.json`，通过 `init_db` 脚本导入 SQLite。
 
+### 迁移本地图片到对象存储
+
+当 `config.yaml` 的 `storage.backend` 从 `local` 切到 `aliyun` / `tencent` / `cloudflare` / `aws` / `minio` 后，历史本地图片不会自动跟过去；用以下脚本一次性迁移：
+
+```sh
+cd backend
+python -m app.scripts.migrate_to_oss --dry-run            # 干跑，只列出待迁移条目
+python -m app.scripts.migrate_to_oss                      # 实际上传并更新 DB 中的 image_path
+python -m app.scripts.migrate_to_oss --limit 50           # 仅迁移前 50 条（分批跑）
+```
+
 ## Frontend
 
 Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router 应用。
@@ -99,6 +110,10 @@ cp config/config.example.yaml config/config.yaml
 cp .env.example .env
 ```
 
+### SSL 证书配置
+
+如果您已放入真实的正式证书（放置在 `./docker/certs/` 目录），请在 `docker-compose.yml` 中移除或注释掉前端服务的自动生成脚本映射：`- ./docker/generate-ssl.sh:/docker-entrypoint.d/generate-ssl.sh:ro`。如果证书文件名不是 `cert.pem` 和 `key.pem`，请相应修改 `./docker/nginx.conf` 中的 `ssl_certificate` 和 `ssl_certificate_key` 路径。
+
 ### 启动
 
 ```sh
@@ -130,4 +145,14 @@ echo "http://localhost:8080/?demo_token=$(docker compose logs backend | grep 'De
 docker compose logs -f backend     # 日志
 docker compose down                # 停止
 docker compose up -d --build       # 重建
+```
+
+### 迁移本地图片到对象存储（容器内）
+
+切换 `storage.backend` 后，在运行中的 backend 容器里执行迁移脚本：
+
+```sh
+docker compose exec backend python -m app.scripts.migrate_to_oss --dry-run    # 干跑
+docker compose exec backend python -m app.scripts.migrate_to_oss              # 实际迁移
+docker compose exec backend python -m app.scripts.migrate_to_oss --limit 50   # 分批
 ```

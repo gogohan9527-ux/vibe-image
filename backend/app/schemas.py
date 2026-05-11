@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 TaskStatus = Literal[
     "queued",
@@ -64,25 +63,12 @@ class TaskItem(BaseModel):
     # 2026-05-09 Addendum (II): img2img reference image. Stored as a path
     # relative to images_dir (e.g. "temp/<sha1>.png"); legacy rows are NULL.
     input_image_path: Optional[str] = None
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def image_url(self) -> Optional[str]:
-        if not self.image_path:
-            return None
-        return f"/images/{os.path.basename(self.image_path)}"
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def input_image_url(self) -> Optional[str]:
-        """Public URL for the img2img reference image (or None for legacy rows).
-
-        ``input_image_path`` is already in ``temp/<sha1>.<ext>`` form, so we
-        just prefix the static mount path.
-        """
-        if not self.input_image_path:
-            return None
-        return f"/images/{self.input_image_path}"
+    # 2026-05-11 Addendum §D: client-facing URLs are hydrated by the route
+    # layer (api/tasks.py, api/history.py) via storage_backend.to_url() so the
+    # active storage backend (local / OSS) decides the URL shape. Computed at
+    # request time, not stored.
+    image_url: Optional[str] = None
+    input_image_url: Optional[str] = None
 
 
 class TaskCreateResponse(BaseModel):

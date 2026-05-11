@@ -532,3 +532,46 @@ data/
 3. Frontend lane 读 `docs/interface.draft.md`。
 4. Phase C 由 orchestrator 合并 draft 入 `interface.md`。
 
+
+## 2026-05-11 Addendum — Storage backend abstraction
+
+> 本节由 `docs/explanation.draft.md` 于 Phase C 合并而来。原计划同时存在的临时 lane（Storage Core / Storage Providers）已经完成；以下规则在未来涉及 storage 抽象层的工作时仍然有效。
+
+### D.1 本轮 Lane 划分与所有权
+
+本轮新增两个 Lane（Backend 内部进一步拆分），与历史 Backend/Frontend 命名区分开：
+
+| Lane | 可写路径 | 不可写路径 |
+|------|---------|-----------|
+| **Storage Core Agent**（Upstream） | `backend/app/core/storage_backend.py`（新建）、`backend/app/core/storage_backends/__init__.py`（新建空骨架）、`backend/app/config.py`、`backend/app/config_layers.py`、`backend/app/main.py`、`backend/app/core/generator.py`、`backend/app/core/task_manager.py`、`backend/app/api/uploads.py`、`backend/app/api/history.py`、`backend/app/api/tasks.py`、`backend/tests/test_storage_local.py` 等 Lane 自测、`config/config.example.yaml`（**仅追加 storage 段示例**）、`docs/storage-backend-contract.md`（新建，本轮契约）、`docs/todolist.md`（仅本轮 S 行） | `frontend/**`、`backend/app/core/storage_backends/{aliyun,tencent,aws_like}.py`、`backend/app/scripts/migrate_to_oss.py`、`backend/requirements.txt`、`docs/prd.md`、`docs/explanation.md`、`docs/interface.md`、`docs/todolist.md`（除 S 行外） |
+| **Storage Providers Agent**（Downstream） | `backend/app/core/storage_backends/aliyun.py`、`backend/app/core/storage_backends/tencent.py`、`backend/app/core/storage_backends/aws_like.py`（新建 3 个适配器，AWS / Cloudflare R2 / MinIO 共用 aws_like）、`backend/app/scripts/migrate_to_oss.py`（新建）、`backend/requirements.txt`（**仅追加**新 SDK 行）、`backend/tests/test_storage_aliyun.py` / `test_storage_tencent.py` / `test_storage_aws_like.py` 等 Lane 自测、`config/config.example.yaml`（**仅完善**每家具体字段示例与注释，不动 storage 顶层结构）、`docs/todolist.md`（仅本轮 P 行） | `frontend/**`、Storage Core Agent 的所有可写路径、`docs/prd.md`、`docs/explanation.md`、`docs/interface.md`、`docs/storage-backend-contract.md`（只读契约） |
+
+跨 Lane 修改一律走"上报 → 主对话决定 → 必要时再发一个小 agent run"，不允许互相 monkey-patch。本轮真实运行中触发了一次该流程：Storage Core 报出 `backend/app/schemas.py:TaskItem` 的 `image_url` / `input_image_url` 用 `@computed_field` 硬编码 `/images/` 前缀，跨过了 storage 抽象层；schemas.py 不在任一 lane 的写权限内，主对话以 follow-up 补丁修复（改为普通字段 + 在 `api/tasks.py` / `api/history.py` 中调 `hydrate_task_item_urls()`）。
+
+### D.2 命名约定
+
+| 实体 | 规则 | 示例 |
+|------|------|------|
+| 存储 key（生成图）| `generated_{task_id}.{ext}` | `generated_4c2b1e8a-....jpeg` |
+| 存储 key（临时图）| `temp/{sha1}.{ext}` | `temp/0fc1...png` |
+| 适配器类名 | `<Provider>Backend` PascalCase | `AliyunOSSBackend`、`AwsLikeBackend` |
+| 配置子模型 | `<Provider>StorageConfig` | `AliyunStorageConfig`、`TencentStorageConfig` |
+| Env 变量 | `VIBE_STORAGE_<PROVIDER>_<KEY>` | `VIBE_STORAGE_ALIYUN_BUCKET` |
+| 异常 | `StorageError(provider: str, op: str, key: str | None, cause: Exception)` | — |
+
+`prefix` 由适配器内部拼到 `key` 前；调用方传入的 `key` **不含** prefix。
+
+### D.3 测试约定
+
+- 每家适配器单测**禁止真连云**：用 `unittest.mock` 替换 SDK client，或使用 `moto`（仅对 boto3）/ `responses`；test 文件用 `pytest.importorskip` 守护 SDK 缺失，未装 SDK 时自动 skip 而非 fail。
+- 本地集成测试只覆盖 `LocalBackend` 与 MinIO（开发机起一个 Docker MinIO 即可），且必须放在 `backend/tests/integration/` 目录，由 `pytest -m integration` 显式运行；默认 `pytest` 跳过。
+
+### D.4 启动顺序
+
+`backend/app/main.py` 的 `_lifespan` 现已构造 Storage / TaskManager / CryptoManager / ProviderStore。本轮在 Storage 之前插入 `storage_backend = build_storage_backend(config.storage, images_dir=config.images_dir)`，挂到 `app.state.storage_backend`。Generator / TaskManager / uploads / history / tasks 通过 `request.app.state.storage_backend` 或显式注入访问。
+
+### D.5 跑测命令（本轮）
+
+- `cd backend && pytest -q`：所有单测（含本轮新增本地后端 + 各家适配器 mock 测试，未装 SDK 时 skip）。
+- 装 SDK 后（`pip install boto3 oss2 cos-python-sdk-v5`）跑同一命令即覆盖三家适配器 mock 测试。
+- `cd backend && python -m app.scripts.migrate_to_oss --dry-run`：迁移脚本干跑（要求 `storage.backend != local`）。

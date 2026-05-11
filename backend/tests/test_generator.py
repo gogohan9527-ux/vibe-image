@@ -10,6 +10,7 @@ import pytest
 import requests
 
 from app.core.generator import GeneratorConfig, GeneratorTask, generate_image
+from app.core.storage_backend import LocalBackend
 from app.errors import CancelledError, ProviderCapabilityError, UpstreamError
 from app.providers.momo import MomoProvider
 
@@ -21,6 +22,7 @@ def _gen_config(tmp_path: Path) -> GeneratorConfig:
         base_url="https://example.invalid/v1",
         request_timeout_seconds=5,
         images_dir=tmp_path,
+        storage_backend=LocalBackend(images_dir=tmp_path),
     )
 
 
@@ -70,9 +72,11 @@ def test_generate_image_success(tmp_path, monkeypatch):
         progress_cb=progress.append,
     )
 
-    assert out.exists()
-    assert out.read_bytes() == b"PNG-PAYLOAD"
-    assert out.name == "generated_abc-123.jpeg"
+    # generate_image now returns the storage key (string), not a Path.
+    assert out == "generated_abc-123.jpeg"
+    on_disk = tmp_path / out
+    assert on_disk.exists()
+    assert on_disk.read_bytes() == b"PNG-PAYLOAD"
     assert 100 in progress
     assert 10 in progress
 
@@ -155,8 +159,10 @@ def test_generate_image_img2img_success(tmp_path, monkeypatch):
     )
 
     out = generate_image(_gen_task_with_image(img), _gen_config(tmp_path))
-    assert out.exists()
-    assert out.read_bytes() == b"OUTPUT"
+    assert out == "generated_abc-img.jpeg"
+    on_disk = tmp_path / out
+    assert on_disk.exists()
+    assert on_disk.read_bytes() == b"OUTPUT"
     # multipart path: files= present, json= NOT used.
     assert "files" in captured
     assert "json" not in captured or captured.get("json") is None
@@ -195,6 +201,7 @@ def test_generate_image_img2img_unsupported_provider_raises(tmp_path, monkeypatc
         base_url="https://fake.invalid/v1",
         request_timeout_seconds=5,
         images_dir=tmp_path,
+        storage_backend=LocalBackend(images_dir=tmp_path),
     )
 
     monkeypatch.setattr(

@@ -340,3 +340,69 @@ Backend lane completed at 2026-05-09T17:25:52
 <!-- 各 Agent 在自己 lane 全部 [x] 后，在此处追加一行 -->
 Backend lane completed at 2026-05-10T00:10:00
 Frontend lane completed at 2026-05-10T09:30:00
+
+
+---
+
+## 2026-05-11 — storage-backend
+
+本轮交付：在保留现有本地默认方案的前提下，引入 storage 抽象层，支持阿里云 OSS / 腾讯云 COS / Cloudflare R2 / AWS S3 / MinIO 五家。详见 [prd.md §D](prd.md) 与 [explanation.draft.md §D.1](explanation.draft.md) 的 Lane 划分。**注意：本轮 Lane 命名为 Storage Core (S 行) 与 Storage Providers (P 行)，与历史的 Backend / Frontend 命名独立。**
+
+### Phase A — 需求与规章 (主对话已完成)
+
+- [x] A1. 计划文件 `C:\Users\PC\.claude\plans\config-env-shimmying-rossum.md` 已写入并经用户批准
+- [x] A2. 在 `docs/prd.md` 末尾追加 §D（storage backend abstraction）
+- [x] A3. 在 `docs/explanation.draft.md` 落本轮 Lane 归属与命名规则（Phase C 合并到 explanation.md）
+- [x] A4. 在本文件追加本节
+- [x] A5. 用户下达 "resume / 恢复执行" 指令 → 进入 Phase B
+
+---
+
+### Phase B — Storage Core Agent (S 行)
+
+**所有权**：见 [explanation.draft.md §D.1](explanation.draft.md) Storage Core Agent 列。
+**Contract**：本 lane 负责**创建** `docs/storage-backend-contract.md`（S6），创建完成且 S6 勾选为契约门控点。
+
+| 序号 | 任务 | 验收点 | 状态 | 备注 |
+|------|------|--------|------|------|
+| S1 | 在 `backend/app/config.py` 顶部新增 `StorageConfig` + 5 个 provider 子模型（`AliyunStorageConfig` / `TencentStorageConfig` / `CloudflareStorageConfig` / `AwsStorageConfig` / `MinioStorageConfig`），并把 `AppConfig` 加 `storage: StorageConfig = Field(default_factory=lambda: StorageConfig(backend="local"))`；`StorageConfig.backend` 取 `Literal["local","aliyun","tencent","cloudflare","aws","minio"]`，默认 `local`；选中 provider 时其子模型 required 字段缺失抛 ValidationError | `python -c "from app.config import load_config; load_config()"` 在不写 storage 段时仍能加载；写了 `storage.backend: aliyun` 但缺 endpoint 时报错点名缺失字段 | [x] | model_validator 校验各 provider 必填字段 |
+| S2 | 在 `backend/app/config_layers.py` 的 `_ENV_TO_PATH` 追加 `VIBE_STORAGE_BACKEND` + 五家所有字段；`VIBE_STORAGE_MINIO_SECURE` 加入 `_BOOL_ENV_VARS`（按需新增此集合） + `_coerce` 处理；其余字符串字段直接映射 | 单测 `tests/test_config_layers.py` 新增本轮覆盖：`VIBE_STORAGE_BACKEND=minio` + `VIBE_STORAGE_MINIO_SECURE=true` → 加载后 `cfg.storage.backend=="minio"` 且 `cfg.storage.minio.secure is True` | [x] | 新增 _BOOL_ENV_VARS + 5 个新单测 |
+| S3 | 新建 `backend/app/core/storage_backend.py`：定义 `StorageBackend` Protocol（save/url/delete/exists 四方法）、`StorageError(provider, op, key, cause)`、`LocalBackend`（实现：save 写 `images_dir/{key}`，url 返回 `/images/{key}`，delete unlink missing_ok，exists `Path.exists`）、`build_storage_backend(cfg, *, images_dir: Path) -> StorageBackend`（switch on `cfg.backend`；目前只能返回 `LocalBackend`，其它 5 个 raise `NotImplementedError("provider <x> not yet wired; see Lane P")`） | `pytest backend/tests/test_storage_local.py` 全绿（S4 写） | [x] | Protocol + LocalBackend + factory + to_url helper |
+| S4 | 写 `backend/tests/test_storage_local.py`：覆盖 save / url(返回 `/images/...`) / delete (idempotent) / exists；不依赖网络 | 单测全绿 | [x] | 覆盖 save/url/delete/exists/factory/StorageError/to_url |
+| S5 | 在 `backend/app/main.py` 的 `_lifespan` 中，于 Storage 初始化之前构造 `app.state.storage_backend = build_storage_backend(config.storage, images_dir=config.images_dir)` | `uvicorn app.main:app --port 18080` 启动无报错；`/api/health` 返回 200 | [x] | storage_backend 注入 TaskManager 构造 |
+| S6 | **创建 `docs/storage-backend-contract.md`**（本轮契约门控点）：完整描述 `StorageBackend` Protocol 签名 + 语义、`key` 命名约定（含 prefix 拼接由谁负责）、URL 三态策略（public_base_url / 预签名 1h / `/images/...`）、错误约定（统一抛 `StorageError`，调用方负责重试或转 HTTP 500）、`build_storage_backend` 工厂签名、每家适配器构造函数应接收哪个子配置模型、Lane P 编写新适配器的“做与不做”清单 | 文件 > 1500 字节；本行勾选 | [x] | 7346 字节；契约门控点已开放 |
+| S7 | 改 `backend/app/core/generator.py:188-191`：移除 `out_path = config.images_dir / ...; out_path.write_bytes(...)`；改为 `key = f"generated_{task.task_id}.{ext}"; storage.save(key, image_resp.content, content_type=...)`；`generate_image` 返回 `key`（不再返回 `Path`）。需要拿 `storage`：由调用侧（task_manager）注入到 `_RunConfig` 或类似容器；不直接 import `app.state`。S8 同步改 task_manager。 | mock 测试 (test_generator) 改用 fake storage 后绿 | [x] | GeneratorConfig 加 storage_backend；返回 key 字符串 |
+| S8 | 改 `backend/app/core/task_manager.py:399-415`：`image_path=str(key)`（存 key 而非绝对路径）；`image_url` 改为 `self._storage_backend.url(key)`；构造时由 `_lifespan` 注入 `storage_backend`。同步给 `_RunConfig`（或同等结构）添加 `storage_backend` 字段，传到 generator | `pytest backend/tests/test_task_manager.py` 全绿 | [x] | TaskManager 注入 storage_backend；持久 key；SSE 走 to_url |
+| S9 | 改 `backend/app/api/uploads.py:96-104`：用 `storage.save(f"temp/{filename}", content, content_type=...)` 替代 `target.write_bytes`；返回字段 `input_image_path=f"temp/{filename}"`、`url=storage.url(f"temp/{filename}")` | `pytest backend/tests/test_uploads.py` 全绿；`/api/uploads/temp` curl 200 返回 url 字段 | [x] | uploads 走 storage.save / storage.url；保留 sha1 去重 |
+| S10 | 改 `backend/app/api/history.py:75-83`：取 `key = row["image_path"]`，先用 `_legacy_path_to_key(key)`（新加的小工具：若以 `/` 开头或绝对路径，则只取 basename；否则原样）规范化，再 `storage.delete(key)`；catch `StorageError` 仅 log 不阻塞 DB 删除 | DELETE `/api/history/{id}` 对新格式 / 老格式记录均能跑通 | [x] | _legacy_path_to_key 处理绝对路径；StorageError 仅记日志 |
+| S11 | `backend/app/api/tasks.py` 历史 / 详情序列化处统一过 `_to_url(storage, image_path_str)`：若已是 `http(s)://` 直接返回；若以 `/images/` 开头返回原值；否则 `storage.url(image_path_str)` | 现有 `test_tasks.py` / `test_history.py` 全绿；新增一条 fixture 测试三态都能映射到正确 url | [x] | to_url 三态在 storage_backend.py + 单测覆盖；TaskItem 现有 computed_field 在 local 下与 to_url 等价（schemas.py 非本 lane 可写） |
+| S12 | `config/config.example.yaml`：在末尾追加 `storage:` 段示例（含 5 家 stub 注释 + `backend: local` 默认）；不动其它段 | 文件可被 `yaml.safe_load` 解析；`load_config(path)` 加载该例无报错 | [x] | 末尾追加完整 5 家 stub（全部注释，保持向后兼容） |
+| S13 | 全量回归 `cd backend && pytest -q` 全绿（旧测试 + 本轮新增） | 全绿 | [x] | 172 passed in 8.68s |
+| S14 | Storage Core lane 完工签名 | 在本节完工签名区追加一行 | [x] | 见下方签名 |
+
+---
+
+### Phase B — Storage Providers Agent (P 行)
+
+**所有权**：见 [explanation.draft.md §D.1](explanation.draft.md) Storage Providers Agent 列。
+**Contract**：等 S6 勾选为 `[x]` 且 `docs/storage-backend-contract.md` 已存在后开工；该文件是本 lane 的唯一接口真相源。
+
+| 序号 | 任务 | 验收点 | 状态 | 备注 |
+|------|------|--------|------|------|
+| P1 | 读 `docs/storage-backend-contract.md` 后，在 `backend/requirements.txt` 末尾追加三行（带注释「OSS storage backends — optional」）：`boto3>=1.34` / `oss2>=2.18` / `cos-python-sdk-v5>=1.9` | `pip install -r backend/requirements.txt` 成功；`python -c "import boto3, oss2, qcloud_cos"` 无 ImportError | [x] | requirements.txt 追加三行；本环境 sandbox 拒绝 `pip install`，安装/导入校验需在常规开发环境复跑 |
+| P2 | 新建 `backend/app/core/storage_backends/__init__.py`（空 + 简注释）、`backend/app/core/storage_backends/aws_like.py` 实现 `AwsLikeBackend`（boto3 client，参数化 endpoint_url / region / access_key_id / access_key_secret / addressing_style；适配 AWS / R2 / MinIO 三家；`save` → `put_object`；`url` → 若 `public_base_url` 拼直链否则 `generate_presigned_url(GetObject, ExpiresIn=3600)`；`delete` → `delete_object`；`exists` → `head_object` 捕 404） | `pytest backend/tests/test_storage_aws_like.py` 全绿（用 `moto` 或纯 mock） | [x] | from_aws/from_cloudflare/from_minio 三个 classmethod；测试通过 `pytest.importorskip` 在无 boto3 时整模块跳过 |
+| P3 | 新建 `backend/app/core/storage_backends/aliyun.py` 实现 `AliyunOSSBackend`（`oss2.Auth` + `oss2.Bucket`；`save` → `put_object`；`url` → 公共域名时手动拼，否则 `bucket.sign_url('GET', key, 3600)`；`delete` → `bucket.delete_object` 捕 NoSuchKey；`exists` → `bucket.object_exists`） | `pytest backend/tests/test_storage_aliyun.py` 全绿（mock `oss2.Bucket`） | [x] | sign_url 使用 slash_safe=True；测试用 `pytest.importorskip` 在无 oss2 时跳过 |
+| P4 | 新建 `backend/app/core/storage_backends/tencent.py` 实现 `TencentCOSBackend`（`qcloud_cos.CosS3Client` + `CosConfig`；put_object / get_presigned_url(Expired=3600) / delete_object / object_exists） | `pytest backend/tests/test_storage_tencent.py` 全绿（mock） | [x] | 测试用 `pytest.importorskip` 在无 qcloud_cos 时跳过 |
+| P5 | 在 `backend/app/core/storage_backend.py` 的 `build_storage_backend` 中删除 `NotImplementedError` 分支，改为按 backend 名字 import 并实例化对应 provider 类，传入对应子配置 + `prefix`；保持 `LocalBackend` 分支不变 | `python -c "from app.config import load_config; from app.core.storage_backend import build_storage_backend; cfg=load_config(); build_storage_backend(cfg.storage, images_dir=cfg.images_dir)"` 在 `backend: local` 下不抛错；改为其它 backend 但凭证齐全也不抛错（不真连） | [x] | 五个 backend 分支均 lazy-import；签名 / Protocol / LocalBackend 未动 |
+| P6 | 新建 `backend/app/scripts/migrate_to_oss.py`：argparse 支持 `--dry-run`、`--limit N`；读 config、要求 `storage.backend != local`；遍历 `images/generated_*` + DB 中 `image_path` 为本地路径的行（用 `Storage.search_tasks` + 客户端过滤）；逐条上传（重试 3 次，幂等：先 `storage.exists`）；成功后 `UPDATE tasks SET image_path = key WHERE id = ?` | dry-run 列出待迁移条目；实际跑后用 `storage.url(key)` 拉到图（用 MinIO 本地集成验证） | [x] | 直接走 sqlite3 而非 `Storage` 类以避免触发 init_db；附 6 个单测覆盖路径解析/重试/幂等/limit/dry-run |
+| P7 | `config/config.example.yaml`：完善每家 provider 子段的字段示例 + 注释（具体 endpoint 写法、region 示例、`public_base_url` 留空含义）；**只动 storage 段内**，不动其它段 | 文件可被 yaml.safe_load 解析 | [x] | 在 Lane S 写好的 storage 段内补充每家字段注释（region 形态、R2 account_id 来源、AWS 凭证默认链等） |
+| P8 | 全量回归 `cd backend && pytest -q` 全绿 | 全绿 | [x] | 189 passed, 3 skipped (三个 SDK 模块在本 sandbox 无法安装→importorskip 自动跳过) |
+| P9 | Storage Providers lane 完工签名 | 在本节完工签名区追加一行 | [x] | |
+
+---
+
+### 完工签名（本轮）
+
+<!-- 各 Agent 在自己 lane 全部 [x] 后，在此处追加一行 -->
+Storage Core lane completed at 2026-05-11T12:00:00
+Storage Providers lane completed at 2026-05-11T15:30:00

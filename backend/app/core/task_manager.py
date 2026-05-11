@@ -17,7 +17,6 @@ Design:
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import uuid
 from collections import deque
@@ -39,6 +38,7 @@ from ..errors import (
 from ..providers import PROVIDER_REGISTRY
 from .generator import GeneratorConfig, GeneratorTask, generate_image
 from .storage import Storage, utcnow_iso
+from .storage_backend import LocalBackend, StorageBackend, to_url
 
 
 logger = logging.getLogger(__name__)
@@ -107,10 +107,18 @@ class TaskManager:
         storage: Storage,
         config: AppConfig,
         generator_runner: Optional[Callable[..., Any]] = None,
+        storage_backend: Optional[StorageBackend] = None,
     ) -> None:
         self._storage = storage
         self._config = config
         self._generator_runner = generator_runner or generate_image
+        # When no backend is injected (legacy test paths), fall back to the
+        # local-filesystem backend rooted at the configured images_dir.
+        self._storage_backend: StorageBackend = (
+            storage_backend
+            if storage_backend is not None
+            else LocalBackend(images_dir=config.images_dir)
+        )
 
         self._lock = threading.RLock()
         self._pending: Deque[TaskHandle] = deque()
@@ -334,6 +342,7 @@ class TaskManager:
             base_url=task_input.base_url,
             request_timeout_seconds=self._config.defaults.request_timeout_seconds,
             images_dir=self._config.images_dir,
+            storage_backend=self._storage_backend,
         )
         # img2img path: resolve the stored relative path (e.g. "temp/<sha1>.png")
         # to an absolute Path under ``images_dir``. Validation already happened
@@ -376,7 +385,7 @@ class TaskManager:
                 return
 
         try:
-            image_path = self._generator_runner(
+            image_result = self._generator_runner(
                 gen_task,
                 gen_config,
                 cancel_event=handle.cancel_event,
@@ -394,13 +403,22 @@ class TaskManager:
             self._finalize_failed(handle, f"Unexpected error: {exc}")
             return
 
+        # ``generate_image`` now returns a storage key (str). For backward
+        # compatibility with tests/runners that still return a ``Path``, fall
+        # back to the file basename — which under LocalBackend matches the
+        # historical key naming.
+        if isinstance(image_result, Path):
+            image_key = image_result.name
+        else:
+            image_key = str(image_result)
+
         # Success.
         try:
             row = self._storage.update_task_fields(
                 task_id,
                 status="succeeded",
                 progress=100,
-                image_path=str(image_path),
+                image_path=image_key,
                 finished_at=utcnow_iso(),
             )
         except TaskNotFoundError:
@@ -408,11 +426,7 @@ class TaskManager:
         finally:
             self._post_run_cleanup(task_id)
         image_path_str = row.get("image_path")
-        image_url = (
-            f"/images/{os.path.basename(image_path_str)}"
-            if image_path_str
-            else None
-        )
+        image_url = to_url(self._storage_backend, image_path_str)
         self._emit(
             {
                 "event": "terminal",

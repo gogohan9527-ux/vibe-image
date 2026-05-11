@@ -28,6 +28,7 @@ from .core.provider_store import (
 )
 from .core.secret_box import SecretBox
 from .core.storage import Storage
+from .core.storage_backend import build_storage_backend
 from .core.task_manager import TaskManager
 from .errors import VibeError
 
@@ -77,12 +78,21 @@ def _init_demo_token(config: AppConfig) -> str | None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     config: AppConfig = app.state.config
-    storage = Storage(db_path=config.database_path, prompts_dir=config.prompts_dir)
-    storage.mark_orphaned_running_as_failed()
+    # 2026-05-11 §D — storage backend is constructed BEFORE Storage / TaskManager
+    # so downstream components can be wired with the same instance.
     config.images_dir.mkdir(parents=True, exist_ok=True)
     config.images_temp_dir.mkdir(parents=True, exist_ok=True)
+    storage_backend = build_storage_backend(
+        config.storage, images_dir=config.images_dir
+    )
+    app.state.storage_backend = storage_backend
 
-    manager = TaskManager(storage=storage, config=config)
+    storage = Storage(db_path=config.database_path, prompts_dir=config.prompts_dir)
+    storage.mark_orphaned_running_as_failed()
+
+    manager = TaskManager(
+        storage=storage, config=config, storage_backend=storage_backend
+    )
     crypto = CryptoManager()
     provider_store = _build_provider_store(config, storage)
     app.state.storage = storage

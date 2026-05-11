@@ -88,6 +88,47 @@ def test_apply_env_overrides_max_upload_bytes():
     assert out["defaults"]["request_timeout_seconds"] == 120
 
 
+def test_apply_env_overrides_storage_backend():
+    out = apply_env_overrides({}, {"VIBE_STORAGE_BACKEND": "minio"})
+    assert out["storage"]["backend"] == "minio"
+
+
+def test_apply_env_overrides_storage_minio_secure_bool_true():
+    out = apply_env_overrides(
+        {},
+        {
+            "VIBE_STORAGE_BACKEND": "minio",
+            "VIBE_STORAGE_MINIO_SECURE": "true",
+        },
+    )
+    assert out["storage"]["backend"] == "minio"
+    assert out["storage"]["minio"]["secure"] is True
+
+
+def test_apply_env_overrides_storage_minio_secure_bool_false():
+    out = apply_env_overrides({}, {"VIBE_STORAGE_MINIO_SECURE": "false"})
+    assert out["storage"]["minio"]["secure"] is False
+
+
+def test_apply_env_overrides_storage_minio_secure_case_insensitive():
+    out = apply_env_overrides({}, {"VIBE_STORAGE_MINIO_SECURE": "YES"})
+    assert out["storage"]["minio"]["secure"] is True
+
+
+def test_apply_env_overrides_storage_string_fields():
+    out = apply_env_overrides(
+        {},
+        {
+            "VIBE_STORAGE_ALIYUN_ENDPOINT": "oss-cn-hangzhou.aliyuncs.com",
+            "VIBE_STORAGE_ALIYUN_BUCKET": "my-bucket",
+            "VIBE_STORAGE_ALIYUN_PREFIX": "vibe/",
+        },
+    )
+    assert out["storage"]["aliyun"]["endpoint"] == "oss-cn-hangzhou.aliyuncs.com"
+    assert out["storage"]["aliyun"]["bucket"] == "my-bucket"
+    assert out["storage"]["aliyun"]["prefix"] == "vibe/"
+
+
 def test_apply_env_overrides_executor_fields():
     out = apply_env_overrides(
         {"executor": {"default_concurrency": 1, "default_queue_size": 1,

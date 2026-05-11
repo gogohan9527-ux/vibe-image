@@ -36,3 +36,71 @@ defaults:
   # Max reference-image upload size for img2img (bytes). Override with env:
   # VIBE_DEFAULTS_MAX_UPLOAD_BYTES.
   max_upload_bytes: 10485760  # 10 MiB
+
+# Optional object-storage backend. Omit entirely (or keep backend: local) to
+# preserve the historical behavior of writing to paths.images_dir and serving
+# via /images/ static mount. See docs/storage-backend-contract.md.
+#
+# Env overrides follow VIBE_STORAGE_<PROVIDER>_<FIELD>, e.g.
+#   VIBE_STORAGE_BACKEND=minio
+#   VIBE_STORAGE_MINIO_ENDPOINT=http://localhost:9000
+#
+# Selected provider's required fields are validated at startup; the SDK for
+# the chosen provider must be installed (see backend/requirements.txt).
+# storage:
+#   backend: local   # local | aliyun | tencent | cloudflare | aws | minio
+#   aliyun:
+#     # Public endpoint of the OSS region the bucket lives in. Use the
+#     # *external* endpoint (the "*-internal.aliyuncs.com" variants are only
+#     # reachable from inside Alibaba Cloud VPCs).
+#     endpoint: oss-cn-hangzhou.aliyuncs.com
+#     bucket: my-bucket
+#     access_key_id: ""               # RAM user AccessKey ID with oss:PutObject / GetObject / DeleteObject
+#     access_key_secret: ""           # paired AccessKey Secret (kept off-disk if loaded via VIBE_* env)
+#     prefix: vibe-image/             # optional; prepended to every key (no leading slash)
+#     public_base_url: ""             # empty → 1h presigned URLs; set to CDN/custom-domain origin to skip signing
+#   tencent:
+#     # COS region code; not the human name (e.g. "ap-guangzhou" not "广州").
+#     region: ap-guangzhou
+#     # Bucket name includes the AppId suffix, e.g. "my-bucket-1250000000".
+#     bucket: my-bucket-1250000000
+#     secret_id: ""                   # CAM user SecretId
+#     secret_key: ""                  # paired SecretKey
+#     prefix: vibe-image/
+#     public_base_url: ""             # empty → 1h presigned URLs
+#   cloudflare:
+#     # From Cloudflare dashboard → R2 → Settings → S3 API → Account ID.
+#     account_id: ""
+#     bucket: my-bucket
+#     # R2 API tokens created at: R2 → Manage API Tokens (NOT the global API key).
+#     access_key_id: ""
+#     access_key_secret: ""
+#     prefix: vibe-image/
+#     # R2 buckets are private by default; for public read you either expose a
+#     # custom domain via Cloudflare or front the bucket with a Worker.
+#     # When empty, the adapter issues 1h presigned URLs.
+#     public_base_url: ""             # e.g. https://images.example.com
+#   aws:
+#     region: us-east-1               # AWS region of the bucket
+#     bucket: my-bucket
+#     # Leave both keys empty to fall back to the boto3 default credential
+#     # chain (env vars / shared credentials file / IAM role).
+#     access_key_id: ""
+#     access_key_secret: ""
+#     prefix: vibe-image/
+#     # Set to a CloudFront / custom domain origin for plain URLs;
+#     # empty → SigV4 presigned URLs valid for 1h.
+#     public_base_url: ""             # e.g. https://dxxxxx.cloudfront.net
+#   minio:
+#     # Full origin including scheme + port. Use https:// for TLS-enabled
+#     # MinIO deployments; the "secure" flag below is informational only — the
+#     # scheme in "endpoint" is what actually decides.
+#     endpoint: http://minio.local:9000
+#     bucket: vibe-image
+#     access_key: ""
+#     secret_key: ""
+#     secure: false                   # informational; effective transport comes from endpoint scheme
+#     prefix: ""
+#     # Set when you front MinIO with a public-facing reverse proxy; empty →
+#     # the adapter signs URLs against the endpoint above for 1h.
+#     public_base_url: ""

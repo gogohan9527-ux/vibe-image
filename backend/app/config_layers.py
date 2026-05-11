@@ -36,6 +36,39 @@ _ENV_TO_PATH: dict[str, tuple[str, ...]] = {
     "VIBE_PATHS_PROMPTS_DIR": ("paths", "prompts_dir"),
     "VIBE_DEFAULTS_REQUEST_TIMEOUT_SECONDS": ("defaults", "request_timeout_seconds"),
     "VIBE_DEFAULTS_MAX_UPLOAD_BYTES": ("defaults", "max_upload_bytes"),
+    # --- storage (2026-05-11) ---
+    "VIBE_STORAGE_BACKEND": ("storage", "backend"),
+    "VIBE_STORAGE_ALIYUN_ENDPOINT": ("storage", "aliyun", "endpoint"),
+    "VIBE_STORAGE_ALIYUN_BUCKET": ("storage", "aliyun", "bucket"),
+    "VIBE_STORAGE_ALIYUN_ACCESS_KEY_ID": ("storage", "aliyun", "access_key_id"),
+    "VIBE_STORAGE_ALIYUN_ACCESS_KEY_SECRET": ("storage", "aliyun", "access_key_secret"),
+    "VIBE_STORAGE_ALIYUN_PREFIX": ("storage", "aliyun", "prefix"),
+    "VIBE_STORAGE_ALIYUN_PUBLIC_BASE_URL": ("storage", "aliyun", "public_base_url"),
+    "VIBE_STORAGE_TENCENT_REGION": ("storage", "tencent", "region"),
+    "VIBE_STORAGE_TENCENT_BUCKET": ("storage", "tencent", "bucket"),
+    "VIBE_STORAGE_TENCENT_SECRET_ID": ("storage", "tencent", "secret_id"),
+    "VIBE_STORAGE_TENCENT_SECRET_KEY": ("storage", "tencent", "secret_key"),
+    "VIBE_STORAGE_TENCENT_PREFIX": ("storage", "tencent", "prefix"),
+    "VIBE_STORAGE_TENCENT_PUBLIC_BASE_URL": ("storage", "tencent", "public_base_url"),
+    "VIBE_STORAGE_CLOUDFLARE_ACCOUNT_ID": ("storage", "cloudflare", "account_id"),
+    "VIBE_STORAGE_CLOUDFLARE_BUCKET": ("storage", "cloudflare", "bucket"),
+    "VIBE_STORAGE_CLOUDFLARE_ACCESS_KEY_ID": ("storage", "cloudflare", "access_key_id"),
+    "VIBE_STORAGE_CLOUDFLARE_ACCESS_KEY_SECRET": ("storage", "cloudflare", "access_key_secret"),
+    "VIBE_STORAGE_CLOUDFLARE_PREFIX": ("storage", "cloudflare", "prefix"),
+    "VIBE_STORAGE_CLOUDFLARE_PUBLIC_BASE_URL": ("storage", "cloudflare", "public_base_url"),
+    "VIBE_STORAGE_AWS_REGION": ("storage", "aws", "region"),
+    "VIBE_STORAGE_AWS_BUCKET": ("storage", "aws", "bucket"),
+    "VIBE_STORAGE_AWS_ACCESS_KEY_ID": ("storage", "aws", "access_key_id"),
+    "VIBE_STORAGE_AWS_ACCESS_KEY_SECRET": ("storage", "aws", "access_key_secret"),
+    "VIBE_STORAGE_AWS_PREFIX": ("storage", "aws", "prefix"),
+    "VIBE_STORAGE_AWS_PUBLIC_BASE_URL": ("storage", "aws", "public_base_url"),
+    "VIBE_STORAGE_MINIO_ENDPOINT": ("storage", "minio", "endpoint"),
+    "VIBE_STORAGE_MINIO_BUCKET": ("storage", "minio", "bucket"),
+    "VIBE_STORAGE_MINIO_ACCESS_KEY": ("storage", "minio", "access_key"),
+    "VIBE_STORAGE_MINIO_SECRET_KEY": ("storage", "minio", "secret_key"),
+    "VIBE_STORAGE_MINIO_SECURE": ("storage", "minio", "secure"),
+    "VIBE_STORAGE_MINIO_PREFIX": ("storage", "minio", "prefix"),
+    "VIBE_STORAGE_MINIO_PUBLIC_BASE_URL": ("storage", "minio", "public_base_url"),
 }
 
 _LIST_ENV_VARS = {"VIBE_SERVER_CORS_ORIGINS"}
@@ -48,6 +81,7 @@ _INT_ENV_VARS = {
     "VIBE_DEFAULTS_REQUEST_TIMEOUT_SECONDS",
     "VIBE_DEFAULTS_MAX_UPLOAD_BYTES",
 }
+_BOOL_ENV_VARS = {"VIBE_STORAGE_MINIO_SECURE"}
 
 
 def _set_at_path(target: dict, path: tuple[str, ...], value: Any) -> None:
@@ -70,6 +104,14 @@ def _coerce(env_name: str, raw: str) -> Any:
         except ValueError:
             # Leave as-is; pydantic will surface a clearer validation error.
             return raw
+    if env_name in _BOOL_ENV_VARS:
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+        # Leave as-is; pydantic will surface a clearer validation error.
+        return raw
     return raw
 
 

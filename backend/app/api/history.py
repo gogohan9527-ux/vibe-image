@@ -9,6 +9,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Path as PathParam, Query, Request, Response
 
 from ..core.storage import Storage
+from ..core.storage_backend import StorageBackend, StorageError, hydrate_task_item_urls
 from ..errors import TaskNotFoundError, VibeError
 from ..schemas import HistoryListResponse, TaskItem
 
@@ -30,6 +31,24 @@ class _TaskActiveError(VibeError):
     http_status = 409
 
 
+def _legacy_path_to_key(s: str) -> str:
+    """Normalize an ``image_path`` DB value to a storage key.
+
+    Historical rows store an absolute path like
+    ``C:\\Users\\me\\images\\generated_xxx.jpeg`` or ``/images/foo.png``.
+    Modern rows store the bare key (``generated_xxx.jpeg`` or
+    ``temp/<sha1>.png``). This helper folds both shapes into the latter so
+    ``StorageBackend.delete`` always receives a key it understands.
+    """
+    if not s:
+        return s
+    if s.startswith(("/", "\\")) or Path(s).is_absolute() or (
+        len(s) >= 3 and ":" in s[:3]
+    ):
+        return Path(s).name
+    return s
+
+
 @router.get("", response_model=HistoryListResponse)
 def list_history(
     request: Request,
@@ -39,6 +58,7 @@ def list_history(
     page_size: int = Query(default=10, ge=1, le=100),
 ) -> HistoryListResponse:
     storage: Storage = request.app.state.storage
+    backend: StorageBackend = request.app.state.storage_backend
     if status and status != "all":
         statuses: List[str] = [status]
     else:
@@ -47,7 +67,7 @@ def list_history(
         query=q, statuses=statuses, page=page, page_size=page_size
     )
     return HistoryListResponse(
-        items=[TaskItem(**r) for r in rows],
+        items=[hydrate_task_item_urls(TaskItem(**r), backend) for r in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -64,6 +84,7 @@ def delete_history(task_id: str = PathParam(...), *, request: Request) -> Respon
     - Otherwise: best-effort unlink the rendered image, then drop the row.
     """
     storage: Storage = request.app.state.storage
+    storage_backend: StorageBackend = request.app.state.storage_backend
     try:
         row = storage.get_task(task_id)
     except TaskNotFoundError:
@@ -74,12 +95,15 @@ def delete_history(task_id: str = PathParam(...), *, request: Request) -> Respon
 
     image_path = row.get("image_path")
     if image_path:
+        key = _legacy_path_to_key(image_path)
         try:
-            Path(image_path).unlink(missing_ok=True)
-        except OSError as exc:
-            # Don't let filesystem hiccups break the DB delete; just log.
+            storage_backend.delete(key)
+        except StorageError as exc:
+            # Don't let backend hiccups break the DB delete; just log.
             logger.info(
-                "history delete: could not unlink %s (%s)", image_path, exc
+                "history delete: storage backend could not delete %s (%s)",
+                key,
+                exc,
             )
 
     storage.delete_task(task_id)

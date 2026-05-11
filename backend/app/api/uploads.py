@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, File, Request, UploadFile
 
 from ..config import AppConfig
+from ..core.storage_backend import StorageBackend
 from ..errors import InvalidUploadError, UploadTooLargeError
 from ..schemas import TempUploadResponse
 
@@ -59,6 +60,7 @@ async def upload_temp_image(
     file: UploadFile = File(...),
 ) -> TempUploadResponse:
     config: AppConfig = request.app.state.config
+    storage: StorageBackend = request.app.state.storage_backend
     max_bytes = config.defaults.max_upload_bytes
 
     # Reject up-front by content-type when the client tells us. We still
@@ -93,13 +95,22 @@ async def upload_temp_image(
 
     sha1 = hashlib.sha1(content, usedforsecurity=False).hexdigest()
     filename = f"{sha1}{ext}"
-    config.images_temp_dir.mkdir(parents=True, exist_ok=True)
-    target = config.images_temp_dir / filename
-    if not target.exists():
-        target.write_bytes(content)
+    key = f"temp/{filename}"
+    # Skip the SDK round-trip when the object already exists (dedup).
+    if not storage.exists(key):
+        content_type = declared_mime or _ext_to_content_type(ext)
+        storage.save(key, content, content_type=content_type)
 
-    rel_path = f"temp/{filename}"
     return TempUploadResponse(
-        input_image_path=rel_path,
-        url=f"/images/{rel_path}",
+        input_image_path=key,
+        url=storage.url(key),
     )
+
+
+def _ext_to_content_type(ext: str) -> str:
+    """Best-effort mapping from sniffed extension back to MIME type."""
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(ext, "application/octet-stream")

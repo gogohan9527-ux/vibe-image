@@ -17,6 +17,7 @@ from ..core.provider_store import (
     ProviderStore,
 )
 from ..core.storage import Storage
+from ..core.storage_backend import StorageBackend, hydrate_task_item_urls
 from ..core.task_manager import TaskInput, TaskManager
 from ..errors import (
     InputImageNotFoundError,
@@ -117,12 +118,17 @@ def _resolve_task_input(
     )
 
 
+def _build_task_item(row: dict, backend: StorageBackend) -> TaskItem:
+    return hydrate_task_item_urls(TaskItem(**row), backend)
+
+
 @router.post("", response_model=TaskCreateResponse, status_code=201)
 def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse:
     manager: TaskManager = request.app.state.task_manager
     storage: Storage = request.app.state.storage
     provider_store: ProviderStore = request.app.state.provider_store
     config: AppConfig = request.app.state.config
+    backend: StorageBackend = request.app.state.storage_backend
 
     if req.save_as_template:
         storage.save_prompt(title=req.prompt[:30], prompt=req.prompt)
@@ -132,23 +138,25 @@ def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse
     for _ in range(req.n):
         row = manager.submit(base_input)
         rows.append(row)
-    return TaskCreateResponse(tasks=[TaskItem(**r) for r in rows])
+    return TaskCreateResponse(tasks=[_build_task_item(r, backend) for r in rows])
 
 
 @router.get("", response_model=TaskListResponse)
 def list_tasks(request: Request) -> TaskListResponse:
     storage: Storage = request.app.state.storage
+    backend: StorageBackend = request.app.state.storage_backend
     rows = storage.list_tasks(
         statuses=("queued", "running", "cancelling"), order="created_at_asc"
     )
-    return TaskListResponse(tasks=[TaskItem(**r) for r in rows])
+    return TaskListResponse(tasks=[_build_task_item(r, backend) for r in rows])
 
 
 @router.get("/{task_id}", response_model=TaskItem)
 def get_task(task_id: str = Path(...), *, request: Request) -> TaskItem:
     storage: Storage = request.app.state.storage
+    backend: StorageBackend = request.app.state.storage_backend
     row = storage.get_task(task_id)
-    return TaskItem(**row)
+    return _build_task_item(row, backend)
 
 
 @router.delete("/{task_id}", response_model=TaskCancelResponse)

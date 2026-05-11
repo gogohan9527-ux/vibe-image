@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from .config_layers import apply_env_overrides
 
@@ -51,6 +51,122 @@ class DefaultsConfig(BaseModel):
     max_upload_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
 
 
+# ---------- Storage backend (2026-05-11 Addendum §D) ----------
+#
+# Each provider sub-model carries its own credentials + addressing. Selected
+# provider's required fields are validated by ``StorageConfig`` below; non-
+# selected sub-models may be left at their defaults.
+
+class AliyunStorageConfig(BaseModel):
+    endpoint: str = ""
+    bucket: str = ""
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    prefix: str = ""
+    public_base_url: str = ""
+
+
+class TencentStorageConfig(BaseModel):
+    region: str = ""
+    bucket: str = ""
+    secret_id: str = ""
+    secret_key: str = ""
+    prefix: str = ""
+    public_base_url: str = ""
+
+
+class CloudflareStorageConfig(BaseModel):
+    account_id: str = ""
+    bucket: str = ""
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    prefix: str = ""
+    public_base_url: str = ""
+
+
+class AwsStorageConfig(BaseModel):
+    region: str = ""
+    bucket: str = ""
+    # access_key_id may be empty — boto3 falls back to its default credential
+    # chain (env, IAM role, etc.).
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    prefix: str = ""
+    public_base_url: str = ""
+
+
+class MinioStorageConfig(BaseModel):
+    endpoint: str = ""
+    bucket: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+    secure: bool = False
+    prefix: str = ""
+    public_base_url: str = ""
+
+
+StorageBackendName = Literal["local", "aliyun", "tencent", "cloudflare", "aws", "minio"]
+
+
+class StorageConfig(BaseModel):
+    backend: StorageBackendName = "local"
+    aliyun: AliyunStorageConfig = Field(default_factory=AliyunStorageConfig)
+    tencent: TencentStorageConfig = Field(default_factory=TencentStorageConfig)
+    cloudflare: CloudflareStorageConfig = Field(default_factory=CloudflareStorageConfig)
+    aws: AwsStorageConfig = Field(default_factory=AwsStorageConfig)
+    minio: MinioStorageConfig = Field(default_factory=MinioStorageConfig)
+
+    @model_validator(mode="after")
+    def _validate_selected_provider(self) -> "StorageConfig":
+        """Ensure the selected provider's required fields are non-empty."""
+        if self.backend == "local":
+            return self
+
+        required: list[tuple[str, str]] = []  # (dotted path, value)
+        if self.backend == "aliyun":
+            required = [
+                ("aliyun.endpoint", self.aliyun.endpoint),
+                ("aliyun.bucket", self.aliyun.bucket),
+                ("aliyun.access_key_id", self.aliyun.access_key_id),
+                ("aliyun.access_key_secret", self.aliyun.access_key_secret),
+            ]
+        elif self.backend == "tencent":
+            required = [
+                ("tencent.region", self.tencent.region),
+                ("tencent.bucket", self.tencent.bucket),
+                ("tencent.secret_id", self.tencent.secret_id),
+                ("tencent.secret_key", self.tencent.secret_key),
+            ]
+        elif self.backend == "cloudflare":
+            required = [
+                ("cloudflare.account_id", self.cloudflare.account_id),
+                ("cloudflare.bucket", self.cloudflare.bucket),
+                ("cloudflare.access_key_id", self.cloudflare.access_key_id),
+                ("cloudflare.access_key_secret", self.cloudflare.access_key_secret),
+            ]
+        elif self.backend == "aws":
+            # access_key_id allowed to be empty (boto3 default chain).
+            required = [
+                ("aws.region", self.aws.region),
+                ("aws.bucket", self.aws.bucket),
+            ]
+        elif self.backend == "minio":
+            required = [
+                ("minio.endpoint", self.minio.endpoint),
+                ("minio.bucket", self.minio.bucket),
+                ("minio.access_key", self.minio.access_key),
+                ("minio.secret_key", self.minio.secret_key),
+            ]
+
+        missing = [path for path, value in required if not value]
+        if missing:
+            raise ValueError(
+                f"storage.backend={self.backend!r} requires non-empty: "
+                + ", ".join(missing)
+            )
+        return self
+
+
 class AppConfig(BaseModel):
     mode: Literal["normal", "demo"] = "normal"
     secret_key: Optional[str] = None
@@ -58,6 +174,7 @@ class AppConfig(BaseModel):
     executor: ExecutorConfig
     paths: PathsConfig
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    storage: StorageConfig = Field(default_factory=lambda: StorageConfig(backend="local"))
 
     def resolve_path(self, relative_or_absolute: str) -> Path:
         """Resolve a path from config relative to the project root."""

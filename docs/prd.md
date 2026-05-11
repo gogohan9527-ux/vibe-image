@@ -600,3 +600,131 @@ defaults:
 - [ ] `pytest backend/tests/` 全绿（含新增 `test_demo_auth.py`）。
 - [ ] `npm run build` 类型通过。
 
+
+
+---
+
+## 2026-05-11 Addendum — 可选 OSS 后端存储 (Storage backend abstraction)
+
+### D.1 背景
+
+当前所有生成图（`backend/app/core/generator.py`）与 img2img 临时上传（`backend/app/api/uploads.py`）一律落到本地 `images/` 目录，FastAPI `StaticFiles` 把 `images/` 挂在 `/images/` 路径下供前端读取。这套方案在单机部署下没问题，但：
+
+- 多机部署或前端反代场景下，每台机器各自存盘，历史图无法共享；
+- 没有 CDN 接入点，海外或多区域访问慢；
+- 本地磁盘占用单调增长，缺乏冷热分层手段。
+
+本轮在**保留本地默认方案**的前提下，引入一个 storage 抽象层：通过配置切换到对象存储后端，把新生成的图与临时上传都放到对象存储；支持五家提供商。
+
+### D.2 目标
+
+| 序号 | 目标 |
+|------|------|
+| D-G1 | 不写 `storage` 段或 `storage.backend: local` 时，行为与今天完全一致（向后兼容） |
+| D-G2 | 支持 `aliyun` / `tencent` / `cloudflare` (R2) / `aws` (S3) / `minio` 五家，切换只改 `storage.backend` |
+| D-G3 | 每家凭证存在独立子段，多家可同时保留；env override 沿用 `VIBE_*` 模式 |
+| D-G4 | 私有桶 + 短 TTL 预签名 URL 为默认；配 `public_base_url` 则用拼接直链 |
+| D-G5 | 提供一次性迁移脚本把本地历史图传到 OSS 并改 DB |
+
+### D.3 非目标
+
+- 不做后端动态切换（运行时改 backend 必须重启）。
+- 不做多 backend 并行写（不复制副本到多家）。
+- 不做断点续传 / 分片上传（单图通常 < 5MB，简单 PUT 足够）。
+- 不暴露 storage 管理 UI；纯配置驱动。
+- 不内置 CDN 鉴权 / Token 桶 / 防盗链；那些由用户在云控制台自行配置。
+
+### D.4 功能需求
+
+#### D.4.1 配置 schema
+
+`config/config.yaml` 新增可选顶层 `storage:` 段：
+
+```yaml
+storage:
+  backend: local   # local | aliyun | tencent | cloudflare | aws | minio
+  aliyun:    { endpoint, bucket, access_key_id, access_key_secret, prefix, public_base_url }
+  tencent:   { region, bucket, secret_id, secret_key, prefix, public_base_url }
+  cloudflare:{ account_id, bucket, access_key_id, access_key_secret, prefix, public_base_url }
+  aws:       { region, bucket, access_key_id, access_key_secret, prefix, public_base_url }
+  minio:     { endpoint, bucket, access_key, secret_key, secure, prefix, public_base_url }
+```
+
+未选中的子段允许缺失或为空；选中的子段必填字段缺失时启动报错（沿用 `_format_validation_error`）。
+
+#### D.4.2 Env override
+
+按 `VIBE_<SECTION>_<KEY>` 规则扩展 `backend/app/config_layers.py` 的 `_ENV_TO_PATH`：
+
+- `VIBE_STORAGE_BACKEND`
+- `VIBE_STORAGE_ALIYUN_ENDPOINT` / `_BUCKET` / `_ACCESS_KEY_ID` / `_ACCESS_KEY_SECRET` / `_PREFIX` / `_PUBLIC_BASE_URL`
+- 同形式覆盖 `TENCENT_*`、`CLOUDFLARE_*`、`AWS_*`、`MINIO_*`（MinIO 含 `_SECURE` 走 bool 强转）。
+
+#### D.4.3 StorageBackend 接口（由 Lane A 在 `docs/storage-backend-contract.md` 中规范化）
+
+```python
+class StorageBackend(Protocol):
+    def save(self, key: str, content: bytes, *, content_type: str | None = None) -> None: ...
+    def url(self, key: str) -> str: ...
+    def delete(self, key: str) -> None: ...
+    def exists(self, key: str) -> bool: ...
+
+def build_storage_backend(cfg: StorageConfig) -> StorageBackend: ...
+```
+
+`key` 语义：
+- 生成图：`generated_{task_id}.{ext}`
+- img2img 临时图：`temp/{sha1}.{ext}`
+
+适配器内部在 `key` 前拼上自己的 `prefix`。错误统一抛 `StorageError`。
+
+#### D.4.4 URL 策略
+
+- 若 `<provider>.public_base_url` 非空：返回 `{public_base_url.rstrip('/')}/{prefix}{key}`。
+- 否则：返回预签名 URL，TTL = 3600 秒（1 小时）。
+- `backend: local`：返回 `/images/{key}`，由现有 `StaticFiles` 挂载提供。
+
+#### D.4.5 接入点
+
+| 文件 | 改动 |
+|------|------|
+| `backend/app/main.py` `_lifespan` | 构造 `app.state.storage_backend = build_storage_backend(config.storage)` |
+| `backend/app/core/generator.py:188-191` | 替换 `out_path.write_bytes(...)` 为 `storage.save(key, content)`；返回 `key` |
+| `backend/app/core/task_manager.py:399-415` | 持久化 `key`（沿用 `image_path` 字段）；推送的 `image_url` 走 `storage.url(key)` |
+| `backend/app/api/uploads.py:96-104` | 用 `storage.save(f"temp/{filename}", content)` 替代直写 |
+| `backend/app/api/history.py:75-83` | `Path(...).unlink` 改为 `storage.delete(key)`；旧记录（绝对路径）走兼容分支 |
+| `backend/app/api/tasks.py` | 历史 / 详情序列化时用 `storage.url(key)`；自动识别 `http(s)://` / `/images/...` / 裸 key 三态 |
+
+#### D.4.6 DB 兼容
+
+`tasks.image_path` 字段含义放宽：可能是历史绝对路径、`/images/...` 相对路径、或裸 key。读取层统一规范化。**不做 schema 变更，不写迁移 SQL。**
+
+#### D.4.7 迁移脚本
+
+`backend/app/scripts/migrate_to_oss.py`：
+- CLI 形式，读当前 config（要求 `storage.backend != local`）。
+- 扫 `images/generated_*` + DB 中 `image_path` 仍是本地路径的行。
+- 上传到对象存储，成功后把 DB 的 `image_path` 改成 key。
+- 失败重试 3 次后跳过并打日志；本地原文件**不删**。
+- 支持 `--dry-run` 仅打印将做什么。
+
+### D.5 错误语义
+
+| 场景 | 抛出 | HTTP 映射 |
+|------|------|----------|
+| 启动时 storage 配置非法 | `ConfigError` | 启动失败（同既有约定） |
+| 上传 / 下载 / 删除时 SDK 报错 | `StorageError`（含 `provider` / `op` / `key`） | 500 `storage_error` |
+| 调用 `url()` 时 key 不存在 | 不报错（返回路径，由前端 GET 时再处理 404） | — |
+
+### D.6 验收标准
+
+- [ ] 不写 `storage` 段（或 `backend: local`），`pytest backend/tests` 全绿 → 行为与今天完全一致。
+- [ ] `storage.backend: minio` + 本地 Docker MinIO 起来后：
+  - 提交一个 txt2img 任务，任务详情返回的 `image_url` 是 MinIO 预签名地址；
+  - 浏览器能直接显示该图；
+  - 历史删除该任务，MinIO 中该对象被清。
+- [ ] img2img：`POST /api/uploads/temp` 返回的 URL 指向 MinIO；generator 能从该 URL 取图。
+- [ ] 切到 `aliyun` / `tencent` / `cloudflare` / `aws` 配置后同上路径走通（SDK mock 测试覆盖；真机由用户验证）。
+- [ ] 单元测试：每家适配器至少覆盖 save / url(预签名) / url(public_base_url) / delete / exists 五条路径。
+- [ ] 配 `public_base_url` 时 URL 是 `https://<base>/<prefix><key>` 形式（无 `?X-Amz-...` / `?OSSAccessKeyId=...` 等签名参数）。
+- [ ] 迁移脚本 `--dry-run` 列出待迁移条目；实跑后随机抽 1 条用 `storage.url()` 拉得到图。

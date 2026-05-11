@@ -27,6 +27,7 @@ import requests
 
 from ..errors import CancelledError, ProviderCapabilityError, UpstreamError
 from ..providers.base import Provider
+from .storage_backend import StorageBackend
 
 
 logger = logging.getLogger(__name__)
@@ -47,13 +48,21 @@ class GeneratorTask:
 
 @dataclass
 class GeneratorConfig:
-    """Per-call configuration injected by ``TaskManager``."""
+    """Per-call configuration injected by ``TaskManager``.
+
+    As of 2026-05-11 the generator no longer touches the filesystem directly;
+    it pushes bytes through ``storage_backend`` which decides whether they
+    land on local disk or in an object-storage bucket. ``images_dir`` is
+    retained because the legacy local backend still uses it indirectly and
+    because img2img code paths may pull reference bytes off disk.
+    """
 
     provider: Provider
     creds: dict
     base_url: str
     request_timeout_seconds: int
     images_dir: Path
+    storage_backend: Optional[StorageBackend] = None
 
 
 def _check_cancel(cancel_event: Optional[threading.Event]) -> None:
@@ -72,8 +81,13 @@ def generate_image(
     cancel_event: Optional[threading.Event] = None,
     progress_cb: Optional[Callable[[int], None]] = None,
     metadata_cb: Optional[Callable[[dict], None]] = None,
-) -> Path:
-    """Run one generation. Returns the path to the saved image.
+) -> str:
+    """Run one generation. Returns the **storage key** of the saved image.
+
+    The key is what the caller persists in ``tasks.image_path`` and what
+    ``storage_backend.url(key)`` translates into a client-facing URL. For
+    the local backend the file ends up at ``images_dir / key``; for cloud
+    backends it lands in the bucket under the adapter's prefix.
 
     Raises ``CancelledError`` if cancelled, ``UpstreamError`` for upstream
     failures.
@@ -185,12 +199,18 @@ def generate_image(
     _check_cancel(cancel_event)
     _emit(80)
 
-    config.images_dir.mkdir(parents=True, exist_ok=True)
+    if config.storage_backend is None:
+        raise RuntimeError(
+            "generate_image requires GeneratorConfig.storage_backend; "
+            "callers must inject the StorageBackend built in app lifespan"
+        )
+
     ext = task.format.lower().lstrip(".") or "jpeg"
-    out_path = config.images_dir / f"generated_{task.task_id}.{ext}"
-    out_path.write_bytes(image_resp.content)
+    key = f"generated_{task.task_id}.{ext}"
+    content_type = image_resp.headers.get("content-type")
+    config.storage_backend.save(key, image_resp.content, content_type=content_type)
 
     _check_cancel(cancel_event)
     _emit(100)
 
-    return out_path
+    return key
