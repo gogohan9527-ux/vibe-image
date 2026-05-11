@@ -141,11 +141,22 @@ watch(
         // Surfaced via the empty state below
       }
     }
-    if (!picker.value.provider_id) {
-      const first = providerStore.providers.find(
-        (p) => (providerStore.keysByProvider[p.id] ?? []).length > 0,
+    const hasKeys = (pid: string): boolean =>
+      (providerStore.keysByProvider[pid] ?? []).length > 0;
+    const currentValid = picker.value.provider_id && hasKeys(picker.value.provider_id);
+    if (!currentValid) {
+      // Prefer a provider that has both default_key_id and default_model
+      // configured; fall back to default_key_id only; finally any provider
+      // with keys. This matches the auto-fill flow in ProviderPicker.
+      const fullyConfigured = providerStore.providers.find(
+        (p) => hasKeys(p.id) && p.config?.default_key_id && p.config?.default_model,
       );
-      if (first) picker.value = { ...picker.value, provider_id: first.id };
+      const keyOnly = providerStore.providers.find(
+        (p) => hasKeys(p.id) && p.config?.default_key_id,
+      );
+      const anyWithKeys = providerStore.providers.find((p) => hasKeys(p.id));
+      const chosen = fullyConfigured ?? keyOnly ?? anyWithKeys;
+      if (chosen) picker.value = { provider_id: chosen.id, key_id: '', model: '' };
     }
   },
   { immediate: true },
@@ -194,6 +205,9 @@ function reset(): void {
   priority.value = false;
   saveAsTemplate.value = false;
   inputImage.value = null;
+  // Clear picker so the next drawer open re-resolves provider defaults
+  // (default_key_id / default_model) instead of reusing last submission.
+  picker.value = { provider_id: '', key_id: '', model: '' };
 }
 
 function goToProviders(): void {

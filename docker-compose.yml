@@ -49,6 +49,8 @@ services:
       - "${FRONTEND_PORT:-8080}:80"
       - "${FRONTEND_HTTPS_PORT:-8443}:443"
     volumes:
-      - ${VIBE_CERTS_DIR:-./docker/certs}:/etc/nginx/certs:ro
+      - ${VIBE_CERTS_DIR:-./docker/certs}:/etc/nginx/certs
+      # 若您已放入真实的正式证书，请将下方自动生成脚本的映射移除或注释掉：
+      - ./docker/generate-ssl.sh:/docker-entrypoint.d/generate-ssl.sh:ro
     depends_on:
       - backend

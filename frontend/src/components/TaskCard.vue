@@ -389,8 +389,7 @@ async function copyError(): Promise<void> {
 /* Mobile: collapse 4-column grid to 2-column */
 @media (max-width: 767px) {
   .task-card {
-    grid-template-columns: 44px 1fr auto;
-    grid-template-rows: auto auto;
+    grid-template-columns: 44px 1fr;
     gap: 12px;
     padding: 12px 14px;
   }
@@ -401,9 +400,20 @@ async function copyError(): Promise<void> {
     justify-content: flex-start;
   }
 
-  /* side (ETA + actions) stays in col 3 */
+  /* ETA + actions become a single row at the bottom of the card */
   .task-side {
-    grid-row: 1;
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .task-eta {
+    text-align: left;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
   }
 
   .task-icon {
