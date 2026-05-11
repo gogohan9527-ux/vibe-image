@@ -53,6 +53,7 @@ def test_tasks_has_input_image_path_column(tmp_path: Path):
     finally:
         s.close()
     assert "input_image_path" in cols
+    assert "input_image_paths" in cols
 
 
 def test_input_image_path_migration_idempotent(tmp_path: Path):
@@ -66,3 +67,41 @@ def test_input_image_path_migration_idempotent(tmp_path: Path):
     finally:
         s2.close()
     assert "input_image_path" in cols
+    assert "input_image_paths" in cols
+
+
+def test_input_image_path_backfills_input_image_paths(tmp_path: Path):
+    db = tmp_path / "data" / "v.db"
+    prompts = tmp_path / "prompts"
+    s1 = Storage(db_path=db, prompts_dir=prompts)
+    try:
+        s1._conn.execute(
+            "INSERT INTO tasks ("
+            "id, prompt, model, size, quality, format, status, progress, "
+            "created_at, priority, input_image_path"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "task-1",
+                "p",
+                "m",
+                "1024x1024",
+                "low",
+                "jpeg",
+                "succeeded",
+                100,
+                "2026-01-01T00:00:00Z",
+                0,
+                "temp/ref.png",
+            ),
+        )
+    finally:
+        s1.close()
+
+    s2 = Storage(db_path=db, prompts_dir=prompts)
+    try:
+        row = s2._conn.execute(
+            "SELECT input_image_paths FROM tasks WHERE id = 'task-1'"
+        ).fetchone()
+    finally:
+        s2.close()
+    assert row["input_image_paths"] == '["temp/ref.png"]'

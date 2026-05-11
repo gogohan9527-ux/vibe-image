@@ -15,7 +15,7 @@
 
 This contract decouples "where bytes physically land" from the rest of the
 backend (generator / task_manager / uploads / history). Any concrete
-implementation that fulfils the four-method Protocol can be plugged in via
+implementation that fulfils the Protocol can be plugged in via
 config without touching call sites. The default is the historical
 filesystem-backed `LocalBackend`; cloud providers are opt-in via the
 `storage` config section.
@@ -27,6 +27,7 @@ The verbatim signatures (see `backend/app/core/storage_backend.py`):
 ```python
 class StorageBackend(Protocol):
     def save(self, key: str, content: bytes, *, content_type: str | None = None) -> None: ...
+    def read(self, key: str) -> bytes: ...
     def url(self, key: str) -> str: ...
     def delete(self, key: str) -> None: ...
     def exists(self, key: str) -> bool: ...
@@ -40,6 +41,13 @@ Per-method semantics:
   to the SDK (e.g. `Content-Type` header) when the backend supports it;
   `LocalBackend` ignores it. Overwriting an existing key is allowed and the
   contract makes no guarantee of atomicity beyond what the SDK provides.
+
+- **`read(key) -> bytes`** — return the raw bytes stored at `key`.
+  Adapters prepend their own `prefix` before talking to the SDK. Missing
+  objects or SDK failures are wrapped in `StorageError(provider, "read",
+  key, cause)`. This method is used by img2img provider calls that need
+  multipart bytes; it is deliberately part of the storage abstraction so OSS
+  mode never falls back to local `images_dir/temp/...` cache paths.
 
 - **`url(key) -> str`** — return a client-facing URL for `key`. Strategy is
   detailed in §4. `url()` MAY be called on a key that does not exist yet —
@@ -68,8 +76,12 @@ The application layer always passes a **clean key** without any prefix:
   `temp/0fc1abcd....png`).
 
 Adapters are responsible for prepending their configured `prefix` internally
-inside every method (`save` / `url` / `delete` / `exists`). The application
+inside every method (`save` / `read` / `url` / `delete` / `exists`). The application
 layer NEVER prefixes the key itself. `prefix` may be empty (the default).
+
+For example, with `prefix="project-a/"`, the app still passes
+`temp/abc.png`; the adapter reads/writes `project-a/temp/abc.png` in the
+bucket.
 
 ## 4. URL strategy
 
@@ -101,7 +113,7 @@ Every SDK exception adapters surface MUST be wrapped in `StorageError` with:
 
 - `provider` — short backend name (`"aliyun"`, `"tencent"`, `"cloudflare"`,
   `"aws"`, `"minio"`).
-- `op` — one of `"save"`, `"url"`, `"delete"`, `"exists"`.
+- `op` — one of `"save"`, `"read"`, `"url"`, `"delete"`, `"exists"`.
 - `key` — the key being acted on, or `None` for URL-style errors where no
   specific key applies.
 - `cause` — the original SDK exception.
@@ -141,10 +153,10 @@ DO:
 
 - Accept the sub-config model as the only constructor arg (optionally plus a
   pre-built SDK client for DI in tests).
-- Prefix the key inside every method (`save` / `url` / `delete` / `exists`)
+- Prefix the key inside every method (`save` / `read` / `url` / `delete` / `exists`)
   — never expect the caller to prefix.
 - Catch SDK exceptions and re-raise as
-  `StorageError(provider="<name>", op="<save|url|delete|exists>", key=..., cause=exc)`.
+  `StorageError(provider="<name>", op="<save|read|url|delete|exists>", key=..., cause=exc)`.
 - For `url`, branch on `self._public_base_url`. When empty, generate a
   presigned URL with TTL 3600 seconds.
 - For `exists`, return `False` on a 404-equivalent error from the SDK;

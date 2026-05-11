@@ -6,12 +6,12 @@ import asyncio
 import json
 import queue
 import threading
+from pathlib import PurePosixPath
 from typing import List, Optional
 
 from fastapi import APIRouter, Path, Request
 from fastapi.responses import StreamingResponse
 
-from ..config import AppConfig
 from ..core.provider_store import (
     ProviderNotFoundInStoreError,
     ProviderStore,
@@ -21,6 +21,7 @@ from ..core.storage_backend import StorageBackend, hydrate_task_item_urls
 from ..core.task_manager import TaskInput, TaskManager
 from ..errors import (
     InputImageNotFoundError,
+    InputImageConflictError,
     KeyNotFoundError,
     ProviderCapabilityError,
     ProviderNotConfiguredError,
@@ -44,24 +45,36 @@ _DEFAULT_QUALITY = "low"
 _DEFAULT_FORMAT = "jpeg"
 
 
-def _validate_input_image_path(raw: str, config: AppConfig) -> str:
-    """Validate the user-supplied ``input_image_path`` is safe + exists.
+def _normalise_requested_input_images(req: TaskCreateRequest) -> list[str]:
+    paths = req.input_image_paths or []
+    legacy = req.input_image_path
+    if paths and legacy and paths != [legacy]:
+        raise InputImageConflictError()
+    if not paths and legacy:
+        paths = [legacy]
+    return [p for p in paths if p]
+
+
+def _validate_input_image_path(raw: str, backend: StorageBackend) -> str:
+    """Validate the user-supplied reference image key is safe + exists.
 
     Returns the same string unchanged on success. Raises
-    ``InputImageNotFoundError`` for a missing file or a path that escapes
-    ``images_dir``.
+    ``InputImageNotFoundError`` for a missing object or a path that escapes
+    the temp key namespace.
     """
     # Must reference the temp/ subtree we control. Reject anything else
     # immediately (also rejects absolute paths and Windows drive letters
     # because those can't start with "temp/").
-    if not raw.startswith("temp/"):
+    parts = PurePosixPath(raw).parts
+    if (
+        not raw.startswith("temp/")
+        or raw.startswith("/")
+        or "\\" in raw
+        or ".." in parts
+    ):
         raise InputImageNotFoundError(input_image_path=raw)
 
-    images_root = config.images_dir.resolve()
-    target = (config.images_dir / raw).resolve()
-    if not target.is_relative_to(images_root):
-        raise InputImageNotFoundError(input_image_path=raw)
-    if not target.is_file():
+    if not backend.exists(raw):
         raise InputImageNotFoundError(input_image_path=raw)
     return raw
 
@@ -69,7 +82,7 @@ def _validate_input_image_path(raw: str, config: AppConfig) -> str:
 def _resolve_task_input(
     req: TaskCreateRequest,
     provider_store: ProviderStore,
-    config: AppConfig,
+    backend: StorageBackend,
 ) -> TaskInput:
     if req.provider_id not in PROVIDER_REGISTRY:
         raise UnknownProviderError(req.provider_id)
@@ -94,9 +107,12 @@ def _resolve_task_input(
 
     # 2026-05-09 Addendum (II) — img2img validation. Both checks fire BEFORE
     # the task is queued so we can surface failures synchronously to the UI.
-    input_image_path: Optional[str] = None
-    if req.input_image_path:
-        input_image_path = _validate_input_image_path(req.input_image_path, config)
+    input_image_paths: list[str] = []
+    requested_paths = _normalise_requested_input_images(req)
+    if requested_paths:
+        input_image_paths = [
+            _validate_input_image_path(path, backend) for path in requested_paths
+        ]
         if not getattr(provider, "supports_image_input", False):
             raise ProviderCapabilityError(
                 provider_id=req.provider_id, capability="image_input"
@@ -114,7 +130,7 @@ def _resolve_task_input(
         key_id=req.key_id,
         base_url=base_url,
         creds=creds,
-        input_image_path=input_image_path,
+        input_image_paths=input_image_paths,
     )
 
 
@@ -127,14 +143,13 @@ def create_tasks(req: TaskCreateRequest, request: Request) -> TaskCreateResponse
     manager: TaskManager = request.app.state.task_manager
     storage: Storage = request.app.state.storage
     provider_store: ProviderStore = request.app.state.provider_store
-    config: AppConfig = request.app.state.config
     backend: StorageBackend = request.app.state.storage_backend
 
     if req.save_as_template:
         storage.save_prompt(title=req.prompt[:30], prompt=req.prompt)
 
     rows: List[dict] = []
-    base_input = _resolve_task_input(req, provider_store, config)
+    base_input = _resolve_task_input(req, provider_store, backend)
     for _ in range(req.n):
         row = manager.submit(base_input)
         rows.append(row)

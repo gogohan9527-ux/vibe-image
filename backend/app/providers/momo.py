@@ -125,30 +125,38 @@ class MomoProvider:
     ) -> HttpCall:
         """Build a multipart POST to ``/images/edits`` (OpenAI-compatible).
 
-        ``task.input_image_path`` MUST be a non-None ``Path`` pointing at an
-        existing PNG/JPEG/WEBP file. Caller (``app.core.generator``) is
-        responsible for that pre-condition.
+        ``task.reference_images`` MUST be non-empty. Caller
+        (``app.core.generator`` / ``TaskManager``) is responsible for resolving
+        storage keys into bytes and URLs.
 
         TODO: ``quality`` / ``format`` are intentionally omitted from the
         edits payload — OpenAI's edits endpoint rejects them. If MOMO accepts
         them they could be added here later.
         """
-        if task.input_image_path is None:
-            raise ValueError("build_image_edit_request requires task.input_image_path")
+        if not task.reference_images:
+            raise ValueError("build_image_edit_request requires reference_images")
         api_key = creds.get("api_key", "")
         url = f"{base_url.rstrip('/')}/images/edits"
-        suffix = task.input_image_path.suffix.lower()
-        mimetype = _MIME_BY_SUFFIX.get(suffix, "application/octet-stream")
-        content = task.input_image_path.read_bytes()
-        # Use only the suffix-bearing filename; do NOT leak server fs paths.
-        filename = task.input_image_path.name
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
             # NB: Content-Type intentionally omitted — requests builds the
             # multipart boundary itself.
         }
-        files = {"image": (filename, content, mimetype)}
+        files = [
+            (
+                "image",
+                (
+                    ref.filename,
+                    ref.content,
+                    ref.content_type or _MIME_BY_SUFFIX.get(
+                        "." + ref.filename.rsplit(".", 1)[-1].lower(),
+                        "application/octet-stream",
+                    ),
+                ),
+            )
+            for ref in task.reference_images
+        ]
         data = {
             "model": model,
             "prompt": task.prompt,

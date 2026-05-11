@@ -409,7 +409,7 @@ defaults:
 
 ## 2026-05-09 Addendum (II) — 图生图 (img2img) 支持
 
-> 本次迭代：在文生图基础上新增"图生图"通路。用户可上传一张参考图，prompt + 图片一起送给 provider；provider 协议增加可选的"图生图入口"，未实现的 provider 会直接报错。本期仅 momo 插件落地。
+> 本次迭代：在文生图基础上新增"图生图"通路。用户可上传一张或多张参考图，prompt + 图片一起送给 provider；provider 协议增加可选的"图生图入口"，未实现的 provider 会直接报错。本期仅 momo 插件落地。
 >
 > 计划文件：`C:\Users\PC\.claude\plans\images-temp-provider-prompt-momo-resume-sleepy-squid.md`。
 
@@ -417,14 +417,13 @@ defaults:
 
 | 序号 | 目标 |
 |------|------|
-| G12 | 在不破坏文生图通路的前提下，提供图生图模式（参考图 + prompt → 输出图） |
+| G12 | 在不破坏文生图通路的前提下，提供图生图模式（参考图数组 + prompt → 输出图） |
 | G13 | Provider 抽象暴露"图生图入口"为可选能力；运行期由元数据 `supports_image_input` 公开，前端可据此 gate UI |
-| G14 | 上传图片落盘到 `images_dir/temp/`，与生成结果共用 `/images` 静态服务 |
+| G14 | 上传图片保存到 active `StorageBackend` 的 `temp/` key 空间；local 模式共用 `/images` 静态服务，OSS 模式使用桶 URL/预签名 URL |
 
 ### B.2 非目标（本期）
 
 - 不做 mask（OpenAI edits 也支持 mask，本期不暴露）。
-- 不做多图输入（仅支持一张参考图）。
 - 不做 temp 目录定时 GC（预留下个工单）。
 - 不修改现有 provider 列表（仅扩 momo）。
 
@@ -435,7 +434,7 @@ defaults:
 `POST /api/uploads/temp`（multipart `file` 字段）：
 - 仅接受 `image/png | image/jpeg | image/webp`，按 MIME + 文件头双重校验。
 - 限制 `≤ max_upload_bytes`（配置项，默认 `10 * 1024 * 1024`）。
-- 落盘命名：`temp/<sha1(content)>.<ext>`；同内容文件去重，不重复落盘。
+- storage key：`temp/<sha1(content)>.<ext>`；同内容文件去重，不重复保存。
 - 响应：`{ "input_image_path": "temp/<sha1>.<ext>", "url": "/images/temp/<sha1>.<ext>" }`。
 
 错误：
@@ -445,13 +444,15 @@ defaults:
 #### B.3.2 任务接口扩展
 
 `POST /api/tasks` 请求体新增可选字段：
-- `input_image_path: string | null` — 由 `/api/uploads/temp` 返回，形如 `temp/<sha1>.<ext>`，**必须以 `temp/` 开头**且实际存在；后端用 `Path.resolve()` 比 `images_dir.resolve()` 前缀，防止越权读其他目录。
+- `input_image_paths: string[] | null` — canonical 多参考图字段。元素由 `/api/uploads/temp` 返回，形如 `temp/<sha1>.<ext>`，**必须以 `temp/` 开头**且在 active storage 中实际存在。
+- `input_image_path: string | null` — 旧单图字段，后端归一化为 `[input_image_path]`；若与 `input_image_paths` 同时传且冲突，返回 `400 input_image_conflict`。
 
 `TaskItem` 响应新增：
-- `input_image_path: string | null` — 后端持久化字段。
-- `input_image_url: string | null`（computed）— 形如 `/images/temp/<sha1>.<ext>`，前端直接 `<img :src>` 用。
+- `input_image_paths: string[] | null` — canonical 多参考图 key 数组。
+- `input_image_urls: string[] | null`（computed）— active storage 为每个 key 生成的 URL。
+- `input_image_path: string | null` / `input_image_url: string | null` — 兼容字段，分别取数组第一个元素。
 
-校验：若 `input_image_path` 非空且选中 provider 的 `supports_image_input == false` → `400 provider_capability_unsupported`。
+校验：若参考图数组非空且选中 provider 的 `supports_image_input == false` → `400 provider_capability_unsupported`。
 
 #### B.3.3 Providers 元数据扩展
 
@@ -460,14 +461,14 @@ defaults:
 
 #### B.3.4 NewTaskDrawer 改造
 
-- 在提示词区下方新增"参考图"小节：拖放 / 点击选择 / 预览缩略图 / 移除按钮。
+- 在提示词区下方新增"参考图"小节：拖放 / 点击多选 / 多缩略图预览 / 单张移除按钮。
 - 选中文件后立刻调 `POST /api/uploads/temp`；失败 toast 错误并允许重试。
 - 当 `selectedProvider.supports_image_input === false` 时：上传区禁用，提示"当前 Provider 不支持图生图"。
-- 提交任务时，若已上传图片则把 `input_image_path` 一并传入 `POST /api/tasks`。
+- 提交任务时，若已上传图片则把 `input_image_paths` 一并传入 `POST /api/tasks`。
 
 #### B.3.5 TaskCard 显示输入图
 
-- 当 `task.input_image_url` 存在：在生成结果缩略图旁加一个小输入图缩略图（同尺寸或略小），便于用户回看是哪张图生成的。
+- 当 `task.input_image_urls` 存在：在生成结果缩略图旁展示一组输入图小缩略图，便于用户回看是哪组图生成的。
 - hover 显示完整大小预览（与现有输出图行为一致）。
 - 历史页 `HistoryView.vue` 同步加输入图列（小缩略图）。
 
@@ -479,26 +480,27 @@ defaults:
   max_upload_bytes: 10485760   # 10 MiB；可被 VIBE_DEFAULTS_MAX_UPLOAD_BYTES 覆盖
 ```
 
-`paths.images_dir` 不变；后端启动时确保 `images_dir/temp/` 存在。
+`paths.images_dir` 不变；local 模式后端启动时确保 `images_dir/temp/` 存在。OSS 模式上传到 `<prefix>temp/<sha1>.<ext>`，prefix 由 storage adapter 内部拼接。
 
 ### B.5 错误语义增量
 
 | HTTP | code | 触发 | 额外字段 |
 |------|------|------|----------|
-| 400 | `provider_capability_unsupported` | 任务带 `input_image_path` 但 provider `supports_image_input == false` | `provider_id`, `capability: "image_input"` |
+| 400 | `provider_capability_unsupported` | 任务带参考图但 provider `supports_image_input == false` | `provider_id`, `capability: "image_input"` |
 | 400 | `invalid_upload` | 上传非图片 / 类型不允许 / 空文件 | `reason` |
 | 413 | `upload_too_large` | 超过 `max_upload_bytes` | `max_bytes`, `actual_bytes` |
-| 400 | `input_image_not_found` | 任务引用的 `input_image_path` 在磁盘上不存在或越界 | `input_image_path` |
+| 400 | `input_image_conflict` | `input_image_path` 与 `input_image_paths` 同时传且冲突 |  |
+| 400 | `input_image_not_found` | 任务引用的参考图 key 不合法或在 active storage 中不存在 | `input_image_path` |
 
 ### B.6 验收标准（本次迭代）
 
 - [ ] 添加 momo provider key 后，新建任务抽屉里的"参考图"区可点亮。
-- [ ] 上传 PNG（< 10MB）成功，drawer 内显示缩略图预览。
+- [ ] 上传多张 PNG/JPEG/WEBP（< 10MB）成功，drawer 内显示多缩略图预览。
 - [ ] 上传 20MB 文件 → 后端 413、前端 toast；上传 .txt → 后端 400、前端 toast。
 - [ ] 提交任务（带参考图）→ 成功生成，TaskCard 同时显示输入图与输出图缩略图。
 - [ ] HistoryView 终态任务可见输入图列。
 - [ ] 临时把 momo 的 `supports_image_input` 改 `false`，提交带图任务 → 前端 toast `provider_capability_unsupported`。
-- [ ] 重启进程后旧任务（`input_image_path` 为 NULL）卡片正常，无 JS 报错。
+- [ ] 重启进程后旧任务（`input_image_path` 为 NULL 或仅旧单图字段）卡片正常，无 JS 报错，旧单图字段会回填到 `input_image_paths`。
 - [ ] `pytest backend/tests/` 全绿（含本轮 + 旧测试）。
 - [ ] `npm run build` 类型通过。
 
@@ -665,6 +667,7 @@ storage:
 ```python
 class StorageBackend(Protocol):
     def save(self, key: str, content: bytes, *, content_type: str | None = None) -> None: ...
+    def read(self, key: str) -> bytes: ...
     def url(self, key: str) -> str: ...
     def delete(self, key: str) -> None: ...
     def exists(self, key: str) -> bool: ...
@@ -692,6 +695,7 @@ def build_storage_backend(cfg: StorageConfig) -> StorageBackend: ...
 | `backend/app/core/generator.py:188-191` | 替换 `out_path.write_bytes(...)` 为 `storage.save(key, content)`；返回 `key` |
 | `backend/app/core/task_manager.py:399-415` | 持久化 `key`（沿用 `image_path` 字段）；推送的 `image_url` 走 `storage.url(key)` |
 | `backend/app/api/uploads.py:96-104` | 用 `storage.save(f"temp/{filename}", content)` 替代直写 |
+| `backend/app/core/task_manager.py` | 参考图执行时通过 `storage.url/read(key)` 构造 provider 入参，不再读取本地缓存路径 |
 | `backend/app/api/history.py:75-83` | `Path(...).unlink` 改为 `storage.delete(key)`；旧记录（绝对路径）走兼容分支 |
 | `backend/app/api/tasks.py` | 历史 / 详情序列化时用 `storage.url(key)`；自动识别 `http(s)://` / `/images/...` / 裸 key 三态 |
 
@@ -703,8 +707,9 @@ def build_storage_backend(cfg: StorageConfig) -> StorageBackend: ...
 
 `backend/app/scripts/migrate_to_oss.py`：
 - CLI 形式，读当前 config（要求 `storage.backend != local`）。
-- 扫 `images/generated_*` + DB 中 `image_path` 仍是本地路径的行。
+- 扫 `images/generated_*`、DB 中 `image_path` 仍是本地路径的行，以及 `input_image_path` / `input_image_paths` 中的 `temp/...` 参考图。
 - 上传到对象存储，成功后把 DB 的 `image_path` 改成 key。
+- 参考图上传到 `<prefix>temp/...`，DB 仍保存 clean key `temp/...`。
 - 失败重试 3 次后跳过并打日志；本地原文件**不删**。
 - 支持 `--dry-run` 仅打印将做什么。
 

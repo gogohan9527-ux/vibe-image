@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TaskStatus = Literal[
     "queued",
@@ -37,6 +38,9 @@ class TaskCreateRequest(BaseModel):
     # path returned from POST /api/uploads/temp, e.g. "temp/<sha1>.png".
     # Validated in api/tasks._resolve_task_input.
     input_image_path: Optional[str] = None
+    # 2026-05-11: canonical multi-reference form. ``input_image_path`` remains
+    # accepted as a single-image compatibility alias at the API boundary.
+    input_image_paths: Optional[List[str]] = None
 
 
 class TaskItem(BaseModel):
@@ -63,12 +67,29 @@ class TaskItem(BaseModel):
     # 2026-05-09 Addendum (II): img2img reference image. Stored as a path
     # relative to images_dir (e.g. "temp/<sha1>.png"); legacy rows are NULL.
     input_image_path: Optional[str] = None
+    # 2026-05-11: canonical multi-reference storage field. DB rows store this
+    # as a JSON string; the validator below parses it into a list for clients.
+    input_image_paths: Optional[List[str]] = None
     # 2026-05-11 Addendum §D: client-facing URLs are hydrated by the route
     # layer (api/tasks.py, api/history.py) via storage_backend.to_url() so the
     # active storage backend (local / OSS) decides the URL shape. Computed at
     # request time, not stored.
     image_url: Optional[str] = None
     input_image_url: Optional[str] = None
+    input_image_urls: Optional[List[str]] = None
+
+    @field_validator("input_image_paths", mode="before")
+    @classmethod
+    def _parse_input_image_paths(cls, value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            try:
+                loaded = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            return loaded if isinstance(loaded, list) else None
+        return value
 
 
 class TaskCreateResponse(BaseModel):

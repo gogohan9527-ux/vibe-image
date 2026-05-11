@@ -50,6 +50,7 @@ TASK_COLUMNS = (
     "provider_id",
     "key_id",
     "input_image_path",
+    "input_image_paths",
 )
 
 
@@ -141,12 +142,35 @@ class Storage:
                 self._conn.execute(
                     "ALTER TABLE tasks ADD COLUMN input_image_path TEXT NULL"
                 )
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(tasks)")}
+            if "input_image_paths" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN input_image_paths TEXT NULL"
+                )
+            self._backfill_input_image_paths()
         status = "exists" if exists else "created"
         return {
             "module": "tasks",
             "status": status,
             "message": f"tasks 模块初始化完成 (status={status})"
         }
+
+    def _backfill_input_image_paths(self) -> None:
+        """Copy legacy single reference-image keys into the canonical JSON list.
+
+        This intentionally uses Python's json module rather than SQLite JSON1,
+        because JSON1 is not guaranteed to be compiled into every SQLite build.
+        """
+        rows = self._conn.execute(
+            "SELECT id, input_image_path FROM tasks "
+            "WHERE (input_image_paths IS NULL OR input_image_paths = '') "
+            "AND input_image_path IS NOT NULL AND input_image_path != ''"
+        ).fetchall()
+        for row in rows:
+            self._conn.execute(
+                "UPDATE tasks SET input_image_paths = ? WHERE id = ?",
+                (json.dumps([row["input_image_path"]]), row["id"]),
+            )
 
     # ---------- Prompt Templates Module ----------
 

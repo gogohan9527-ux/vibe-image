@@ -26,7 +26,7 @@ from app.core.storage_backend import StorageError
         ("/abs/path/foo.png", True),
         ("C:\\abs\\path\\foo.png", True),
         ("generated_abc.jpeg", True),
-        ("temp/abc.png", False),  # bare key for img2img upload — not a migration target
+        ("temp/abc.png", True),
         ("https://cdn.example/x.jpeg", False),
         ("", False),
     ],
@@ -71,6 +71,24 @@ def _make_db_with_rows(db_path: Path, rows: list[tuple[str, str]]) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, image_path TEXT)")
     conn.executemany("INSERT INTO tasks (id, image_path) VALUES (?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def _make_db_with_reference_rows(
+    db_path: Path, rows: list[tuple[str, str | None, str | None]]
+) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE tasks ("
+        "id TEXT PRIMARY KEY, image_path TEXT, "
+        "input_image_path TEXT, input_image_paths TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO tasks (id, image_path, input_image_path, input_image_paths) "
+        "VALUES (?, NULL, ?, ?)",
+        rows,
+    )
     conn.commit()
     conn.close()
 
@@ -202,3 +220,26 @@ def test_migrate_respects_limit(tmp_path: Path):
     stats = mod._migrate(cfg, storage, dry_run=False, limit=2)
     assert stats.scanned == 2
     assert stats.migrated == 2
+
+
+def test_migrate_uploads_temp_reference_paths(tmp_path: Path):
+    cfg = _make_config(tmp_path)
+    _make_db_with_reference_rows(
+        cfg.database_path,
+        [
+            ("t1", "temp/ref_a.png", '["temp/ref_a.png", "temp/ref_b.webp"]'),
+        ],
+    )
+    (cfg.images_dir / "temp").mkdir()
+    (cfg.images_dir / "temp" / "ref_a.png").write_bytes(b"A")
+    (cfg.images_dir / "temp" / "ref_b.webp").write_bytes(b"B")
+
+    storage = MagicMock()
+    storage.exists.return_value = False
+
+    stats = mod._migrate(cfg, storage, dry_run=False, limit=None)
+
+    assert stats.scanned == 1
+    assert stats.migrated == 2
+    saved_keys = [call.args[0] for call in storage.save.call_args_list]
+    assert saved_keys == ["temp/ref_a.png", "temp/ref_b.webp"]

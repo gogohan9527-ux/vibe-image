@@ -29,6 +29,7 @@ Behaviour:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sqlite3
 import sys
@@ -87,6 +88,8 @@ def _looks_like_local_path(image_path: str) -> bool:
     """
     if not image_path:
         return False
+    if image_path.startswith(("http://", "https://")):
+        return False
     # Absolute paths or static-mount URLs.
     if image_path.startswith("/"):
         return True
@@ -95,6 +98,9 @@ def _looks_like_local_path(image_path: str) -> bool:
     # ``generated_<id>.<ext>`` form — bare filename. Migrate so the DB picks
     # up the canonical key while the ``exists`` probe makes it a no-op upload.
     if image_path.startswith("generated_"):
+        return True
+    # Reference-image keys are now a first-class migration target.
+    if image_path.startswith("temp/"):
         return True
     return False
 
@@ -108,6 +114,34 @@ def _resolve_local_file(image_path: str, images_dir: Path) -> Path:
     if p.is_absolute():
         return p
     return images_dir / p
+
+
+def _storage_key_for_path(image_path: str, local_file: Path, images_dir: Path) -> str:
+    """Return the clean storage key that should be persisted / uploaded."""
+    if not image_path.startswith(("/", "\\")) and not (
+        len(image_path) >= 2 and image_path[1] == ":"
+    ):
+        return image_path
+    try:
+        return local_file.resolve().relative_to(images_dir.resolve()).as_posix()
+    except ValueError:
+        return local_file.name
+
+
+def _parse_input_image_paths(raw: object) -> list[str]:
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, list):
+        return [p for p in raw if isinstance(p, str) and p]
+    if not isinstance(raw, str):
+        return []
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [p for p in loaded if isinstance(p, str) and p]
 
 
 def _content_type_for(path: Path) -> str:
@@ -147,9 +181,7 @@ def _save_with_retry(
     raise last_exc
 
 
-def _iter_candidate_rows(
-    db_path: Path, *, limit: Optional[int]
-) -> list[sqlite3.Row]:
+def _iter_candidate_rows(db_path: Path, *, limit: Optional[int]) -> list[dict]:
     """Fetch and filter candidate rows up-front.
 
     Materialising the result means the read connection is closed before the
@@ -160,15 +192,27 @@ def _iter_candidate_rows(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        cur = conn.execute(
-            "SELECT id, image_path FROM tasks "
-            "WHERE image_path IS NOT NULL AND image_path != ''"
-        )
-        results: list[sqlite3.Row] = []
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        wanted = [
+            c
+            for c in ("id", "image_path", "input_image_path", "input_image_paths")
+            if c in cols
+        ]
+        cur = conn.execute(f"SELECT {', '.join(wanted)} FROM tasks")
+        results: list[dict] = []
         for row in cur:
-            if not _looks_like_local_path(row["image_path"]):
+            item = {c: row[c] if c in row.keys() else None for c in wanted}
+            item.setdefault("image_path", None)
+            item.setdefault("input_image_path", None)
+            item.setdefault("input_image_paths", None)
+            candidates = [
+                item.get("image_path") or "",
+                item.get("input_image_path") or "",
+                *_parse_input_image_paths(item.get("input_image_paths")),
+            ]
+            if not any(_looks_like_local_path(str(c)) for c in candidates):
                 continue
-            results.append(row)
+            results.append(item)
             if limit is not None and len(results) >= limit:
                 break
         return results
@@ -187,6 +231,80 @@ def _update_image_path(db_path: Path, task_id: str, key: str) -> None:
         conn.close()
 
 
+def _update_column(db_path: Path, task_id: str, column: str, value: str) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            f"UPDATE tasks SET {column} = ? WHERE id = ?", (value, task_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _migrate_one_path(
+    *,
+    config: AppConfig,
+    storage: StorageBackend,
+    stats: _Stats,
+    task_id: str,
+    image_path: str,
+    dry_run: bool,
+) -> Optional[str]:
+    if not _looks_like_local_path(image_path):
+        return None
+
+    images_dir = config.images_dir
+    local_file = _resolve_local_file(image_path, images_dir)
+    key = _storage_key_for_path(image_path, local_file, images_dir)
+
+    if not local_file.exists():
+        logger.info("task=%s: file missing on disk (%s); skipping", task_id, local_file)
+        stats.skipped_missing += 1
+        return None
+
+    try:
+        already = storage.exists(key)
+    except StorageError as exc:
+        logger.error("task=%s: exists() failed for key=%s: %s", task_id, key, exc)
+        stats.failed += 1
+        return None
+
+    if already:
+        stats.skipped_already += 1
+        logger.info("task=%s: key=%s already present in OSS", task_id, key)
+        return key
+
+    content_type = _content_type_for(local_file)
+
+    if dry_run:
+        logger.info(
+            "task=%s: WOULD upload %s → key=%s (content-type=%s)",
+            task_id,
+            local_file,
+            key,
+            content_type,
+        )
+        stats.migrated += 1
+        return key
+
+    try:
+        content = local_file.read_bytes()
+        _save_with_retry(storage, key, content, content_type=content_type)
+    except StorageError as exc:
+        logger.error("task=%s: save failed for key=%s: %s", task_id, key, exc)
+        stats.failed += 1
+        return None
+    except OSError as exc:
+        logger.error("task=%s: read failed for %s: %s", task_id, local_file, exc)
+        stats.failed += 1
+        return None
+
+    stats.migrated += 1
+    logger.info("task=%s: migrated → key=%s", task_id, key)
+    return key
+
+
 def _migrate(
     config: AppConfig,
     storage: StorageBackend,
@@ -195,68 +313,55 @@ def _migrate(
     limit: Optional[int],
 ) -> _Stats:
     stats = _Stats()
-    images_dir = config.images_dir
     db_path = config.database_path
 
     for row in _iter_candidate_rows(db_path, limit=limit):
         stats.scanned += 1
         task_id = row["id"]
-        image_path = row["image_path"]
-        local_file = _resolve_local_file(image_path, images_dir)
-        key = local_file.name  # bare filename = canonical key
+        migrated_cache: dict[str, Optional[str]] = {}
 
-        if not local_file.exists():
-            logger.info("task=%s: file missing on disk (%s); skipping", task_id, local_file)
-            stats.skipped_missing += 1
-            continue
+        def migrate_cached(path: str) -> Optional[str]:
+            if path not in migrated_cache:
+                migrated_cache[path] = _migrate_one_path(
+                    config=config,
+                    storage=storage,
+                    stats=stats,
+                    task_id=task_id,
+                    image_path=path,
+                    dry_run=dry_run,
+                )
+            return migrated_cache[path]
 
-        try:
-            already = storage.exists(key)
-        except StorageError as exc:
-            logger.error("task=%s: exists() failed for key=%s: %s", task_id, key, exc)
-            stats.failed += 1
-            continue
+        image_path = row.get("image_path") or ""
+        if image_path:
+            migrated_key = migrate_cached(image_path)
+            if migrated_key and migrated_key != image_path and not dry_run:
+                _update_image_path(db_path, task_id, migrated_key)
 
-        if already:
-            stats.skipped_already += 1
-            if image_path != key and not dry_run:
-                _update_image_path(db_path, task_id, key)
-            logger.info(
-                "task=%s: key=%s already present in OSS%s",
-                task_id,
-                key,
-                " (DB updated)" if image_path != key and not dry_run else "",
-            )
-            continue
+        input_image_path = row.get("input_image_path") or ""
+        if input_image_path:
+            migrated_key = migrate_cached(input_image_path)
+            if migrated_key and migrated_key != input_image_path and not dry_run:
+                _update_column(db_path, task_id, "input_image_path", migrated_key)
 
-        content_type = _content_type_for(local_file)
-
-        if dry_run:
-            logger.info(
-                "task=%s: WOULD upload %s → key=%s (content-type=%s)",
-                task_id,
-                local_file,
-                key,
-                content_type,
-            )
-            stats.migrated += 1
-            continue
-
-        try:
-            content = local_file.read_bytes()
-            _save_with_retry(storage, key, content, content_type=content_type)
-        except StorageError as exc:
-            logger.error("task=%s: save failed for key=%s: %s", task_id, key, exc)
-            stats.failed += 1
-            continue
-        except OSError as exc:
-            logger.error("task=%s: read failed for %s: %s", task_id, local_file, exc)
-            stats.failed += 1
-            continue
-
-        _update_image_path(db_path, task_id, key)
-        stats.migrated += 1
-        logger.info("task=%s: migrated → key=%s", task_id, key)
+        paths = _parse_input_image_paths(row.get("input_image_paths"))
+        if paths:
+            next_paths = []
+            changed = False
+            for path in paths:
+                migrated_key = migrate_cached(path)
+                if migrated_key:
+                    next_paths.append(migrated_key)
+                    changed = changed or migrated_key != path
+                else:
+                    next_paths.append(path)
+            if changed and not dry_run:
+                _update_column(
+                    db_path,
+                    task_id,
+                    "input_image_paths",
+                    json.dumps(next_paths),
+                )
 
     return stats
 

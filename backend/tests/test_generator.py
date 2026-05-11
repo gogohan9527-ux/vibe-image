@@ -9,7 +9,12 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from app.core.generator import GeneratorConfig, GeneratorTask, generate_image
+from app.core.generator import (
+    GeneratorConfig,
+    GeneratorTask,
+    ReferenceImage,
+    generate_image,
+)
 from app.core.storage_backend import LocalBackend
 from app.errors import CancelledError, ProviderCapabilityError, UpstreamError
 from app.providers.momo import MomoProvider
@@ -133,6 +138,7 @@ def test_generate_image_cancelled_between_phases(tmp_path, monkeypatch):
 
 
 def _gen_task_with_image(input_path: Path) -> GeneratorTask:
+    content = input_path.read_bytes()
     return GeneratorTask(
         task_id="abc-img",
         prompt="redraw",
@@ -140,7 +146,15 @@ def _gen_task_with_image(input_path: Path) -> GeneratorTask:
         size="1024x1024",
         quality="low",
         format="jpeg",
-        input_image_path=input_path,
+        reference_images=[
+            ReferenceImage(
+                key=f"temp/{input_path.name}",
+                url=f"/images/temp/{input_path.name}",
+                filename=input_path.name,
+                content_type="image/png" if input_path.suffix == ".png" else "image/jpeg",
+                content=content,
+            )
+        ],
     )
 
 
@@ -166,7 +180,8 @@ def test_generate_image_img2img_success(tmp_path, monkeypatch):
     # multipart path: files= present, json= NOT used.
     assert "files" in captured
     assert "json" not in captured or captured.get("json") is None
-    assert captured["files"]["image"][1] == b"PNGBYTES"
+    assert captured["files"][0][0] == "image"
+    assert captured["files"][0][1][1] == b"PNGBYTES"
     assert captured["url"].endswith("/images/edits")
     assert captured["data"]["prompt"] == "redraw"
 
@@ -232,4 +247,4 @@ def test_generate_image_img2img_uses_multipart_not_json(tmp_path, monkeypatch):
 
     generate_image(_gen_task_with_image(img), _gen_config(tmp_path))
     assert seen.get("json") is None
-    assert seen["files"]["image"][2] == "image/jpeg"
+    assert seen["files"][0][1][2] == "image/jpeg"

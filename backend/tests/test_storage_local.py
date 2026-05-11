@@ -28,6 +28,12 @@ def test_local_save_creates_subdirectory_for_slashed_key(tmp_path: Path):
     assert target.read_bytes() == b"PNGDATA"
 
 
+def test_local_read_returns_bytes(tmp_path: Path):
+    backend = LocalBackend(images_dir=tmp_path)
+    backend.save("temp/abcdef.png", b"PNGDATA", content_type="image/png")
+    assert backend.read("temp/abcdef.png") == b"PNGDATA"
+
+
 def test_local_url_uses_images_prefix_with_forward_slashes(tmp_path: Path):
     backend = LocalBackend(images_dir=tmp_path)
     assert backend.url("generated_xyz.jpeg") == "/images/generated_xyz.jpeg"

@@ -67,6 +67,18 @@ def test_save_wraps_oss_error(fake_bucket):
     assert ei.value.op == "save"
 
 
+# ---------- read ----------
+
+
+def test_read_applies_prefix(fake_bucket):
+    obj = MagicMock()
+    obj.read.return_value = b"BYTES"
+    fake_bucket.get_object.return_value = obj
+    backend = AliyunOSSBackend(_cfg(prefix="p/"))
+    assert backend.read("foo.jpg") == b"BYTES"
+    fake_bucket.get_object.assert_called_once_with("p/foo.jpg")
+
+
 # ---------- url ----------
 
 

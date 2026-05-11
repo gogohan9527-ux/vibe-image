@@ -54,8 +54,9 @@ const templatesLoading = ref(false);
 
 // img2img reference image (added 2026-05-09 II).
 interface InputImageState { path: string; url: string; name: string }
-const inputImage = ref<InputImageState | null>(null);
-const uploading = ref(false);
+const inputImages = ref<InputImageState[]>([]);
+const uploadingCount = ref(0);
+const uploading = computed(() => uploadingCount.value > 0);
 
 const selectedProvider = computed(() =>
   picker.value.provider_id
@@ -67,7 +68,7 @@ const supportsImage = computed<boolean>(() => selectedProvider.value?.supports_i
 // If user switches to a provider that doesn't support image input, drop any
 // previously selected reference image so we don't accidentally submit it.
 watch(supportsImage, (next) => {
-  if (!next && inputImage.value) inputImage.value = null;
+  if (!next && inputImages.value.length > 0) inputImages.value = [];
 });
 
 async function handleFileSelected(file: UploadFile): Promise<void> {
@@ -76,10 +77,12 @@ async function handleFileSelected(file: UploadFile): Promise<void> {
   // Element Plus's <el-upload> calls on-change for status transitions too; we
   // only want the moment a fresh file is picked.
   if (file.status !== 'ready' && file.status !== undefined) return;
-  uploading.value = true;
+  uploadingCount.value += 1;
   try {
     const res = await uploadTempImage(raw);
-    inputImage.value = { path: res.input_image_path, url: res.url, name: raw.name };
+    if (!inputImages.value.some((img) => img.path === res.input_image_path)) {
+      inputImages.value.push({ path: res.input_image_path, url: res.url, name: raw.name });
+    }
   } catch (err) {
     if (err instanceof ApiError) {
       if (err.body.code === 'upload_too_large') {
@@ -93,12 +96,12 @@ async function handleFileSelected(file: UploadFile): Promise<void> {
       ElMessage.error('上传失败');
     }
   } finally {
-    uploading.value = false;
+    uploadingCount.value = Math.max(0, uploadingCount.value - 1);
   }
 }
 
-function clearInputImage(): void {
-  inputImage.value = null;
+function removeInputImage(path: string): void {
+  inputImages.value = inputImages.value.filter((img) => img.path !== path);
 }
 
 const sizeOptions = computed<string[]>(() => {
@@ -204,7 +207,7 @@ function reset(): void {
   count.value = 1;
   priority.value = false;
   saveAsTemplate.value = false;
-  inputImage.value = null;
+  inputImages.value = [];
   // Clear picker so the next drawer open re-resolves provider defaults
   // (default_key_id / default_model) instead of reusing last submission.
   picker.value = { provider_id: '', key_id: '', model: '' };
@@ -247,7 +250,9 @@ async function submit(): Promise<void> {
       n: count.value,
       priority: priority.value,
       save_as_template: saveAsTemplate.value || undefined,
-      input_image_path: inputImage.value?.path ?? undefined,
+      input_image_paths: inputImages.value.length > 0
+        ? inputImages.value.map((img) => img.path)
+        : undefined,
     };
 
     const res = await createTask(payload);
@@ -323,12 +328,12 @@ async function submit(): Promise<void> {
           >
             <div class="upload-wrap">
               <ElUpload
-                v-if="!inputImage"
                 :show-file-list="false"
                 :auto-upload="false"
                 :disabled="!supportsImage || uploading"
                 accept="image/png,image/jpeg,image/webp"
                 drag
+                multiple
                 :on-change="handleFileSelected"
                 class="ref-uploader"
               >
@@ -339,18 +344,22 @@ async function submit(): Promise<void> {
                   </p>
                 </div>
               </ElUpload>
-              <div v-else class="ref-preview">
-                <ElImage
-                  :src="inputImage.url"
-                  :preview-src-list="[inputImage.url]"
-                  fit="cover"
-                  preview-teleported
-                  hide-on-click-modal
-                  class="ref-thumb"
-                />
-                <div class="ref-meta">
-                  <span class="ref-name" :title="inputImage.name">{{ inputImage.name }}</span>
-                  <ElButton text type="danger" size="small" @click="clearInputImage">移除</ElButton>
+              <div v-if="inputImages.length > 0" class="ref-list">
+                <div v-for="img in inputImages" :key="img.path" class="ref-preview">
+                  <ElImage
+                    :src="img.url"
+                    :preview-src-list="inputImages.map((x) => x.url)"
+                    fit="cover"
+                    preview-teleported
+                    hide-on-click-modal
+                    class="ref-thumb"
+                  />
+                  <div class="ref-meta">
+                    <span class="ref-name" :title="img.name">{{ img.name }}</span>
+                    <ElButton text type="danger" size="small" @click="removeInputImage(img.path)">
+                      移除
+                    </ElButton>
+                  </div>
                 </div>
               </div>
             </div>
@@ -564,6 +573,7 @@ async function submit(): Promise<void> {
 .upload-wrap {
   display: flex;
   flex-direction: column;
+  gap: 10px;
 }
 
 .ref-uploader :deep(.el-upload-dragger) {
@@ -581,6 +591,12 @@ async function submit(): Promise<void> {
   margin: 0;
   font-size: 12px;
   color: var(--vi-text-muted);
+}
+
+.ref-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
 .ref-preview {

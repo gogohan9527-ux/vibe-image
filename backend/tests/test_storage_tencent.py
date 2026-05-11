@@ -68,6 +68,20 @@ def test_save_wraps_cos_error(fake_client):
     assert ei.value.op == "save"
 
 
+# ---------- read ----------
+
+
+def test_read_applies_prefix(fake_client):
+    stream = MagicMock()
+    stream.read.return_value = b"BYTES"
+    body = MagicMock()
+    body.get_raw_stream.return_value = stream
+    fake_client.get_object.return_value = {"Body": body}
+    backend = TencentCOSBackend(_cfg(prefix="p/"))
+    assert backend.read("foo.jpg") == b"BYTES"
+    fake_client.get_object.assert_called_once_with(Bucket="b-12345", Key="p/foo.jpg")
+
+
 # ---------- url ----------
 
 

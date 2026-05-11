@@ -152,6 +152,16 @@ class AwsLikeBackend:
                 raise StorageError(self._provider, "save", key, exc) from exc
             raise
 
+    def read(self, key: str) -> bytes:
+        full_key = self._prefix + key
+        try:
+            result = self._client.get_object(Bucket=self._bucket, Key=full_key)
+            return result["Body"].read()
+        except Exception as exc:  # noqa: BLE001
+            if _is_boto_error(exc):
+                raise StorageError(self._provider, "read", key, exc) from exc
+            raise
+
     def url(self, key: str) -> str:
         full_key = self._prefix + key
         if self._public_base_url:

@@ -146,7 +146,7 @@ def test_supports_image_input_flag():
 
 
 def test_build_image_edit_request_shape(tmp_path):
-    from app.core.generator import GeneratorTask
+    from app.core.generator import GeneratorTask, ReferenceImage
 
     img = tmp_path / "abc123.png"
     img.write_bytes(b"<bytes>")
@@ -158,7 +158,15 @@ def test_build_image_edit_request_shape(tmp_path):
         size="1024x1024",
         quality="low",
         format="jpeg",
-        input_image_path=img,
+        reference_images=[
+            ReferenceImage(
+                key="temp/abc123.png",
+                url="/images/temp/abc123.png",
+                filename="abc123.png",
+                content_type="image/png",
+                content=b"<bytes>",
+            )
+        ],
     )
     p = MomoProvider()
     call = p.build_image_edit_request(
@@ -176,7 +184,7 @@ def test_build_image_edit_request_shape(tmp_path):
     assert "Content-Type" not in call.headers
     assert call.json_body is None
     assert call.files is not None
-    file_tuple = call.files["image"]
+    file_tuple = call.files[0][1]
     assert file_tuple[0].endswith(".png")
     assert file_tuple[1] == b"<bytes>"
     assert file_tuple[2] == "image/png"
@@ -189,7 +197,7 @@ def test_build_image_edit_request_shape(tmp_path):
 
 
 def test_build_image_edit_request_jpeg_mime(tmp_path):
-    from app.core.generator import GeneratorTask
+    from app.core.generator import GeneratorTask, ReferenceImage
 
     img = tmp_path / "x.jpg"
     img.write_bytes(b"\xff\xd8\xff")
@@ -200,13 +208,21 @@ def test_build_image_edit_request_jpeg_mime(tmp_path):
         size="1024x1024",
         quality="low",
         format="jpeg",
-        input_image_path=img,
+        reference_images=[
+            ReferenceImage(
+                key="temp/x.jpg",
+                url="/images/temp/x.jpg",
+                filename="x.jpg",
+                content_type="image/jpeg",
+                content=b"\xff\xd8\xff",
+            )
+        ],
     )
     call = MomoProvider().build_image_edit_request(
         task, {"api_key": "k"}, "https://m.invalid/v1", "m"
     )
     assert call.files is not None
-    assert call.files["image"][2] == "image/jpeg"
+    assert call.files[0][1][2] == "image/jpeg"
 
 
 def test_build_image_edit_request_requires_input_image_path(tmp_path):
@@ -219,7 +235,6 @@ def test_build_image_edit_request_requires_input_image_path(tmp_path):
         size="1024x1024",
         quality="low",
         format="jpeg",
-        input_image_path=None,
     )
     with pytest.raises(ValueError):
         MomoProvider().build_image_edit_request(

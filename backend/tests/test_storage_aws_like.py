@@ -108,6 +108,18 @@ def test_save_wraps_client_error(fake_client):
     assert ei.value.key == "x"
 
 
+# ---------- read ----------
+
+
+def test_read_applies_prefix(fake_client):
+    body = MagicMock()
+    body.read.return_value = b"BYTES"
+    fake_client.get_object.return_value = {"Body": body}
+    backend = AwsLikeBackend.from_minio(_minio_cfg(prefix="p/"))
+    assert backend.read("foo.jpg") == b"BYTES"
+    fake_client.get_object.assert_called_once_with(Bucket="b", Key="p/foo.jpg")
+
+
 # ---------- url ----------
 
 

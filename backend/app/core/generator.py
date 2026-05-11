@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ReferenceImage:
+    """A storage-backed reference image prepared for provider plugins."""
+
+    key: str
+    url: str
+    filename: str
+    content_type: str
+    content: bytes
+
+
+@dataclass
 class GeneratorTask:
     task_id: str
     prompt: str
@@ -41,9 +52,10 @@ class GeneratorTask:
     size: str
     quality: str
     format: str  # e.g. "jpeg", "png"
-    # 2026-05-09 Addendum (II) — when set, route through the provider's
-    # ``build_image_edit_request`` instead of ``build_request``.
-    input_image_path: Optional[Path] = None
+    # 2026-05-11 — when non-empty, route through the provider's image-edit
+    # entrypoint. Reference bytes / URLs are resolved by StorageBackend before
+    # providers see them, so providers never read server-local cache paths.
+    reference_images: list[ReferenceImage] = field(default_factory=list)
 
 
 @dataclass
@@ -111,7 +123,7 @@ def generate_image(
     _check_cancel(cancel_event)
     _emit(10)
 
-    if task.input_image_path is not None:
+    if task.reference_images:
         # img2img path — provider must opt-in via ``supports_image_input``
         # AND expose ``build_image_edit_request``. Otherwise reject early.
         provider = config.provider

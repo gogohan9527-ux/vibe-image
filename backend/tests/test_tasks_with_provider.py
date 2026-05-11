@@ -141,6 +141,50 @@ def test_task_with_input_image_path_success(client):
     task = r.json()["tasks"][0]
     assert task["input_image_path"] == rel
     assert task["input_image_url"] == f"/images/{rel}"
+    assert task["input_image_paths"] == [rel]
+    assert task["input_image_urls"] == [f"/images/{rel}"]
+
+
+def test_task_with_input_image_paths_success(client):
+    key_id = _seed_momo_key(client)
+    rel_a = _write_temp_image(client.app.state.config, b"A")
+    rel_b = "temp/fake-b.webp"
+    (client.app.state.config.images_temp_dir / "fake-b.webp").write_bytes(b"B")
+    r = client.post(
+        "/api/tasks",
+        json={
+            "prompt": "x",
+            "provider_id": "momo",
+            "key_id": key_id,
+            "model": "t8-/gpt-image-2",
+            "input_image_paths": [rel_a, rel_b],
+        },
+    )
+    assert r.status_code == 201, r.text
+    task = r.json()["tasks"][0]
+    assert task["input_image_paths"] == [rel_a, rel_b]
+    assert task["input_image_urls"] == [f"/images/{rel_a}", f"/images/{rel_b}"]
+    assert task["input_image_path"] == rel_a
+
+
+def test_task_input_image_path_conflict_rejected(client):
+    key_id = _seed_momo_key(client)
+    rel = _write_temp_image(client.app.state.config)
+    other = "temp/other.png"
+    (client.app.state.config.images_temp_dir / "other.png").write_bytes(b"B")
+    r = client.post(
+        "/api/tasks",
+        json={
+            "prompt": "x",
+            "provider_id": "momo",
+            "key_id": key_id,
+            "model": "t8-/gpt-image-2",
+            "input_image_path": rel,
+            "input_image_paths": [other],
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["code"] == "input_image_conflict"
 
 
 def test_task_input_image_path_traversal_rejected(client):

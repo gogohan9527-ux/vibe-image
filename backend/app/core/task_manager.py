@@ -17,6 +17,7 @@ Design:
 from __future__ import annotations
 
 import logging
+import json
 import threading
 import uuid
 from collections import deque
@@ -36,12 +37,24 @@ from ..errors import (
     VibeError,
 )
 from ..providers import PROVIDER_REGISTRY
-from .generator import GeneratorConfig, GeneratorTask, generate_image
+from .generator import GeneratorConfig, GeneratorTask, ReferenceImage, generate_image
 from .storage import Storage, utcnow_iso
 from .storage_backend import LocalBackend, StorageBackend, to_url
 
 
 logger = logging.getLogger(__name__)
+
+
+_CONTENT_TYPE_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def _content_type_for_key(key: str) -> str:
+    return _CONTENT_TYPE_BY_SUFFIX.get(Path(key).suffix.lower(), "application/octet-stream")
 
 
 def _extract_revised_prompt(payload: object) -> Optional[str]:
@@ -85,9 +98,8 @@ class TaskInput:
     creds: dict[str, str]
     prompt_template_id: Optional[str] = None
     priority: bool = False
-    # 2026-05-09 Addendum (II) — relative path (e.g. "temp/<sha1>.png") under
-    # ``images_dir``. None for plain text→image tasks.
-    input_image_path: Optional[str] = None
+    # Canonical multi-reference keys, e.g. ["temp/<sha1>.png"].
+    input_image_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -179,7 +191,16 @@ class TaskManager:
                 "priority": 1 if task_input.priority else 0,
                 "provider_id": task_input.provider_id,
                 "key_id": task_input.key_id,
-                "input_image_path": task_input.input_image_path,
+                "input_image_path": (
+                    task_input.input_image_paths[0]
+                    if task_input.input_image_paths
+                    else None
+                ),
+                "input_image_paths": (
+                    json.dumps(task_input.input_image_paths)
+                    if task_input.input_image_paths
+                    else None
+                ),
             }
             self._storage.insert_task(row)
             if task_input.priority:
@@ -344,14 +365,13 @@ class TaskManager:
             images_dir=self._config.images_dir,
             storage_backend=self._storage_backend,
         )
-        # img2img path: resolve the stored relative path (e.g. "temp/<sha1>.png")
-        # to an absolute Path under ``images_dir``. Validation already happened
-        # at the API boundary (api/tasks._resolve_task_input); the file may have
-        # been deleted between submit and run, in which case the provider will
-        # raise on read_bytes() and the failure will surface as ``upstream``.
-        input_image_abs: Optional[Path] = None
-        if task_input.input_image_path:
-            input_image_abs = self._config.images_dir / task_input.input_image_path
+        try:
+            reference_images = self._build_reference_images(
+                task_input.input_image_paths
+            )
+        except Exception as exc:  # noqa: BLE001 - storage backends wrap SDK errors
+            self._finalize_failed(handle, f"Reference image unavailable: {exc}")
+            return
 
         gen_task = GeneratorTask(
             task_id=task_id,
@@ -360,7 +380,7 @@ class TaskManager:
             size=task_input.size,
             quality=task_input.quality,
             format=task_input.format,
-            input_image_path=input_image_abs,
+            reference_images=reference_images,
         )
 
         def _on_progress(p: int) -> None:
@@ -437,6 +457,20 @@ class TaskManager:
                 "image_url": image_url,
             }
         )
+
+    def _build_reference_images(self, keys: list[str]) -> list[ReferenceImage]:
+        refs: list[ReferenceImage] = []
+        for key in keys:
+            refs.append(
+                ReferenceImage(
+                    key=key,
+                    url=self._storage_backend.url(key),
+                    filename=Path(key).name,
+                    content_type=_content_type_for_key(key),
+                    content=self._storage_backend.read(key),
+                )
+            )
+        return refs
 
     def _finalize_cancelled(self, handle: TaskHandle) -> None:
         try:

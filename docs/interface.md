@@ -855,7 +855,7 @@ export interface ConfigStatusResponse {
 | POST | `/api/providers/{provider_id}/models/refresh` | 新增（§10.1.7） |
 | GET | `/images/{filename}` | StaticFiles，不变 |
 
-> 自 2026-05-09（II）起新增 `POST /api/uploads/temp`、`POST /api/tasks` 加入可选字段 `input_image_path`、`TaskItem` / `ProviderSummary` 增字段，详见 §11。
+> 自 2026-05-09（II）起新增 `POST /api/uploads/temp`、`POST /api/tasks` 加入参考图字段、`TaskItem` / `ProviderSummary` 增字段，详见 §11。自 2026-05-11 起参考图主字段升级为 `input_image_paths`，旧 `input_image_path` 保留兼容。
 
 ---
 
@@ -869,7 +869,7 @@ export interface ConfigStatusResponse {
 
 ### 11.1 [NEW] `POST /api/uploads/temp`
 
-上传一张图生图的参考图，返回服务端落盘的相对路径。前端在新建任务前调用本端点拿到 `input_image_path`，再把它当作 `POST /api/tasks` 的 `input_image_path` 字段传入。
+上传一张图生图的参考图，返回 storage key 和可预览 URL。前端可多次调用本端点拿到多个 `input_image_path`，再把这些 key 组成 `input_image_paths` 数组传给 `POST /api/tasks`。
 
 - **Content-Type**: `multipart/form-data`
 - **请求字段**：
@@ -878,7 +878,7 @@ export interface ConfigStatusResponse {
 后端语义：
 1. 读全文件至内存，超过 `defaults.max_upload_bytes`（默认 `10 * 1024 * 1024` = 10 MiB；可通过 `VIBE_DEFAULTS_MAX_UPLOAD_BYTES` env 覆盖）→ 413。
 2. magic-byte 校验确认是真 PNG / JPEG / WEBP，否则 → 400。
-3. 计算 `sha1(content)` 作为去重键；若 `images_dir/temp/<sha1>.<ext>` 已存在则跳过写入（同内容重复上传幂等）。
+3. 计算 `sha1(content)` 作为去重键；若 active `StorageBackend.exists("temp/<sha1>.<ext>")` 为 true 则跳过写入（同内容重复上传幂等）。
 4. 扩展名按 sniff 结果取（不信用户提交的文件名/MIME）：PNG → `.png`，JPEG → `.jpg`，WEBP → `.webp`。
 
 **响应 200**：
@@ -889,7 +889,7 @@ export interface ConfigStatusResponse {
 }
 ```
 
-> 注：`input_image_path` 用 forward slash 形式（即使后端是 Windows）。前端原样回填到 `POST /api/tasks` 的 `input_image_path`；`url` 可直接拼到 `<img :src>`（与 `/images/...` 静态服务并存）。
+> 注：`input_image_path` 用 forward slash 形式（即使后端是 Windows）。新前端把多个返回值组成 `input_image_paths`；旧 client 仍可把单个值回填到 `input_image_path`。`url` 由 active storage backend 生成：local 为 `/images/temp/...`，OSS 模式为 public URL 或预签名 URL。
 
 **错误**：
 
@@ -905,28 +905,33 @@ curl -F file=@photo.png http://127.0.0.1:8000/api/uploads/temp
 
 **安全约束**：
 - 错误信息中**不**回显完整原始文件名给前端（仅响应 sha1 短哈希），避免暴露文件系统细节。
-- `images_dir/temp/` 在后端启动时确保存在（`config.images_temp_dir`）。
+- local 模式下 `images_dir/temp/` 在后端启动时确保存在（`config.images_temp_dir`）；OSS 模式下对象写入 `<prefix>temp/<sha1>.<ext>`。
 - 上传文件**不**会在任务结束后自动清理（保留以便历史回看）；GC 留作后续工单。
 
 ---
 
-### 11.2 [CHANGED] `POST /api/tasks` — 增量字段 `input_image_path`
+### 11.2 [CHANGED] `POST /api/tasks` — 增量字段 `input_image_paths`
 
-在 §10.2（v2，2026-05-09）的基础上新增**一个可选字段**：
+在 §10.2（v2，2026-05-09）的基础上新增参考图字段。`input_image_paths` 是 canonical 多图字段；`input_image_path` 是旧单图兼容字段。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `input_image_path` | `string \| null` | 否 | 由 `POST /api/uploads/temp` 返回，形如 `"temp/<sha1>.<ext>"`，**必须以 `temp/` 开头**。非空时该任务走 img2img 通路。 |
+| `input_image_paths` | `string[] \| null` | 否 | 由 `POST /api/uploads/temp` 返回的 key 数组，元素形如 `"temp/<sha1>.<ext>"`，**必须以 `temp/` 开头**。非空数组时任务走 img2img 通路。 |
+| `input_image_path` | `string \| null` | 否 | 旧字段；后端归一化为 `[input_image_path]`。若与 `input_image_paths` 同时传且内容冲突，返回 `400 input_image_conflict`。 |
 
 其余请求字段与 §10.2 完全一致。
 
 后端语义（与 §10.2 v2 流程的差异）：
-1. 若 `input_image_path` 非空：
-   - 拼绝对路径 `(images_dir / input_image_path).resolve()`，必须以 `images_dir.resolve()` 为前缀；否则 → 400 `input_image_not_found`。
-   - 该绝对路径必须实际存在；不存在 → 400 `input_image_not_found`。
+1. 后端先归一化参考图字段：
+   - 若只传 `input_image_path`，转为单元素数组。
+   - 若只传 `input_image_paths`，原样使用非空元素。
+   - 若二者同时传且不等价，返回 `400 input_image_conflict`。
+2. 若归一化后的数组非空：
+   - 每个 key 必须位于 `temp/` 命名空间，不能是绝对路径，不能包含 `..` 或反斜杠；否则 → 400 `input_image_not_found`。
+   - 每个 key 必须通过 active `StorageBackend.exists(key)` 校验；local 模式查本地文件，OSS 模式查桶对象；不存在 → 400 `input_image_not_found`。
    - 选中 provider 的 `supports_image_input` 必须为 `true`；否则 → 400 `provider_capability_unsupported`。
-2. `input_image_path` 透传到 `TaskInput`，最终在 `generate_image` 里被 provider 的 `build_image_edit_request` 使用。
-3. `n > 1` 时每条任务共用同一个 `input_image_path`（不复制文件）。
+3. 任务内部只使用 `input_image_paths`。执行时由 `StorageBackend.url/read` 构造 provider 需要的参考图 URL / bytes，不再拼 `images_dir/temp/...` 本地路径。
+4. `n > 1` 时每条任务共用同一组 `input_image_paths`（不复制文件）。
 
 **响应 201**（与 §10.2 一致，但 `TaskItem` 增量见 §11.3）。
 
@@ -934,8 +939,9 @@ curl -F file=@photo.png http://127.0.0.1:8000/api/uploads/temp
 
 | HTTP | code | 触发 | 额外字段 |
 |------|------|------|----------|
-| 400 | `input_image_not_found` | `input_image_path` 不存在或越界（指向 `images_dir` 之外） | `input_image_path: string` |
-| 400 | `provider_capability_unsupported` | 任务带 `input_image_path` 但选中 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: "image_input"` |
+| 400 | `input_image_conflict` | `input_image_path` 与 `input_image_paths` 同时传且不等价 |  |
+| 400 | `input_image_not_found` | 某个参考图 key 不合法或在 active storage 中不存在 | `input_image_path: string` |
+| 400 | `provider_capability_unsupported` | 任务带参考图但选中 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: "image_input"` |
 | 400 | `unknown_provider` / `provider_not_configured` / `key_not_found` | 沿用 §10.2 |  |
 | 429 | `queue_full` | 沿用 §1.1 |  |
 
@@ -948,19 +954,21 @@ PATH_=$(echo "$RESP" | python -c "import sys,json;print(json.load(sys.stdin)['in
 # 2. 提交带图任务
 curl -X POST http://127.0.0.1:8000/api/tasks \
   -H "Content-Type: application/json" \
-  -d "{\"prompt\":\"redraw as oil painting\",\"provider_id\":\"momo\",\"key_id\":\"abc-123\",\"model\":\"t8-/gpt-image-2\",\"input_image_path\":\"$PATH_\"}"
+  -d "{\"prompt\":\"redraw as oil painting\",\"provider_id\":\"momo\",\"key_id\":\"abc-123\",\"model\":\"t8-/gpt-image-2\",\"input_image_paths\":[\"$PATH_\"]}"
 ```
 
 ---
 
-### 11.3 [CHANGED] `TaskItem` — 增量字段 `input_image_path` / `input_image_url`
+### 11.3 [CHANGED] `TaskItem` — 增量字段 `input_image_paths` / `input_image_urls`
 
-`TaskItem` schema 在 §7 + §10.5（v2）字段基础上新增两个字段：
+`TaskItem` schema 在 §7 + §10.5（v2）字段基础上新增多图字段，并保留旧单图字段作为派生兼容值：
 
 | 字段 | 类型 | 来源 | 说明 |
 |------|------|------|------|
-| `input_image_path` | `string \| null` | DB 列 | 形如 `"temp/<sha1>.<ext>"`；旧任务（升级前创建）为 `null` |
-| `input_image_url` | `string \| null` | computed | 当 `input_image_path` 非空时为 `"/images/" + input_image_path`，否则 `null`；前端直接 `<img :src>` 用 |
+| `input_image_paths` | `string[] \| null` | DB JSON 列 | canonical 参考图 key 数组；旧任务或无参考图任务为 `null` |
+| `input_image_urls` | `string[] \| null` | computed | active storage backend 为每个 key 生成的 URL 数组 |
+| `input_image_path` | `string \| null` | compatibility | `input_image_paths[0]`；旧 client 用 |
+| `input_image_url` | `string \| null` | compatibility | `input_image_urls[0]`；旧 client 用 |
 
 完整示例（带图任务）：
 ```json
@@ -976,6 +984,8 @@ curl -X POST http://127.0.0.1:8000/api/tasks \
   "progress": 100,
   "image_path": "/abs/path/images/generated_task-xyz.jpeg",
   "image_url": "/images/generated_task-xyz.jpeg",
+  "input_image_paths": ["temp/9f86d0...png", "temp/abcd12...webp"],
+  "input_image_urls": ["/images/temp/9f86d0...png", "/images/temp/abcd12...webp"],
   "input_image_path": "temp/9f86d0...png",
   "input_image_url": "/images/temp/9f86d0...png",
   "error_message": null,
@@ -988,7 +998,7 @@ curl -X POST http://127.0.0.1:8000/api/tasks \
 }
 ```
 
-`TaskItem` 在所有列出 / 单查 / SSE terminal payload 路径里都会带这两个字段；旧任务两字段都为 `null`，前端按缺省处理（不渲染输入图）。
+`TaskItem` 在所有列出 / 单查路径里都会带这些字段；旧任务字段为 `null`，前端按缺省处理（不渲染输入图）。SSE terminal payload 仍只保证输出图字段（`image_path` / `image_url`）。
 
 ---
 
@@ -1015,7 +1025,8 @@ curl -X POST http://127.0.0.1:8000/api/tasks \
 /** Response of POST /api/uploads/temp. */
 export interface TempUploadResponse {
   /** Server-side relative path, e.g. "temp/<sha1>.png". Re-submit verbatim
-   *  in POST /api/tasks's `input_image_path` field. */
+   *  in POST /api/tasks's `input_image_paths` array, or legacy
+   *  `input_image_path` field for single-image clients. */
   input_image_path: string;
   /** Public URL for inline preview, e.g. "/images/temp/<sha1>.png". */
   url: string;
@@ -1023,35 +1034,40 @@ export interface TempUploadResponse {
 
 // TaskItem 的 (II) 增量字段（其余字段同 §7 + §10.5）：
 //   input_image_path: string | null;
-//   input_image_url:  string | null;   // computed: "/images/" + input_image_path
+//   input_image_url:  string | null;   // compatibility: first URL
+//   input_image_paths: string[] | null;
+//   input_image_urls:  string[] | null;
 
 // ProviderSummary 的 (II) 增量字段（其余字段同 §10.5）：
 //   supports_image_input: boolean;
 
 // CreateTaskRequest 的 (II) 增量字段（其余字段同 §10.2）：
-//   input_image_path?: string | null;  // "temp/<sha1>.<ext>"
+//   input_image_paths?: string[] | null; // canonical
+//   input_image_path?: string | null;    // legacy single-image alias
 ```
 
 ---
 
 ### 11.6 错误码增量
 
-新增 4 个 code（其余沿用既有 §8 + §10.6 错误码表）：
+新增 5 个 code（其余沿用既有 §8 + §10.6 错误码表）：
 
 | HTTP | code | 端点 | 触发条件 | 额外字段 |
 |------|------|------|---------|---------|
 | 400 | `invalid_upload` | `POST /api/uploads/temp` | 文件缺失 / MIME 不允许 / 头校验失败 | `reason: string` |
 | 413 | `upload_too_large` | `POST /api/uploads/temp` | 字节数超过 `defaults.max_upload_bytes` | `max_bytes: int`, `actual_bytes: int` |
-| 400 | `input_image_not_found` | `POST /api/tasks` | `input_image_path` 不存在或越界（指向 `images_dir` 之外） | `input_image_path: string` |
-| 400 | `provider_capability_unsupported` | `POST /api/tasks` | 任务带 `input_image_path`，但 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: string`（本期固定为 `"image_input"`）|
+| 400 | `input_image_conflict` | `POST /api/tasks` | `input_image_path` 与 `input_image_paths` 同时传且不等价 |  |
+| 400 | `input_image_not_found` | `POST /api/tasks` | 参考图 key 不合法或在 active storage 中不存在 | `input_image_path: string` |
+| 400 | `provider_capability_unsupported` | `POST /api/tasks` | 任务带参考图，但 provider 的 `supports_image_input == false` | `provider_id: string`, `capability: string`（本期固定为 `"image_input"`）|
 
 ---
 
 ### 11.7 兼容性 / 边界
 
-- 既有不带 `input_image_path` 的任务流程**完全不受影响**——字段是可选的；旧 client 不发字段即走文生图分支，行为与 v2 一致。
-- 旧任务（升级前已落库）`input_image_path` 列为 NULL，`TaskItem.input_image_path` / `input_image_url` 都返回 `null`，前端按缺省渲染。
-- 上传文件不会在任务结束时被自动 GC；多次任务可复用同一个 `input_image_path`（`POST /api/uploads/temp` 内置去重）。
+- 既有不带参考图字段的任务流程**完全不受影响**——字段是可选的；旧 client 不发字段即走文生图分支，行为与 v2 一致。
+- 旧 client 传 `input_image_path` 仍可创建单参考图任务；后端写入 canonical `input_image_paths`，并同步保留旧首图字段。
+- 启动迁移会把历史 `input_image_path` 回填到 `input_image_paths = ["..."]`；不触发网络上传。
+- 上传文件不会在任务结束时被自动 GC；多次任务可复用同一个参考图 key（`POST /api/uploads/temp` 内置去重）。
 - 上传不做速率限制（本期单机工具，留作后续）。
 
 ---

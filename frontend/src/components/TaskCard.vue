@@ -93,6 +93,14 @@ const avatarHue = computed(() => {
 
 // Tasks created before the 2026-05-09 plugin-providers round have NULL provider_id.
 const isLegacy = computed<boolean>(() => props.task.provider_id == null);
+const inputImageUrls = computed<string[]>(() => {
+  if (props.task.input_image_urls?.length) return props.task.input_image_urls;
+  return props.task.input_image_url ? [props.task.input_image_url] : [];
+});
+const visibleInputImageUrls = computed<string[]>(() => inputImageUrls.value.slice(0, 3));
+const hiddenInputImageCount = computed<number>(() =>
+  Math.max(0, inputImageUrls.value.length - visibleInputImageUrls.value.length),
+);
 
 async function copyError(): Promise<void> {
   const msg = props.task.error_message;
@@ -157,8 +165,21 @@ async function copyError(): Promise<void> {
     </div>
 
     <div class="task-thumbs">
-      <div v-if="task.input_image_url" class="task-input-thumb" title="参考图">
-        <PreviewImage :src="task.input_image_url" alt="input" />
+      <div v-if="visibleInputImageUrls.length > 0" class="task-input-thumbs">
+        <div
+          v-for="(url, i) in visibleInputImageUrls"
+          :key="url"
+          class="task-input-thumb"
+          :title="`参考图 ${i + 1}`"
+        >
+          <PreviewImage :src="url" alt="input" />
+          <span
+            v-if="i === visibleInputImageUrls.length - 1 && hiddenInputImageCount > 0"
+            class="thumb-more"
+          >
+            +{{ hiddenInputImageCount }}
+          </span>
+        </div>
       </div>
       <div class="task-thumb">
         <PreviewImage :src="task.image_url" alt="thumbnail" />
@@ -266,16 +287,36 @@ async function copyError(): Promise<void> {
   align-items: center;
   gap: 6px;
   justify-content: flex-end;
+  min-width: 0;
+}
+
+.task-input-thumbs {
+  display: grid;
+  grid-template-columns: repeat(3, 38px);
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .task-input-thumb {
-  width: 44px;
-  height: 44px;
+  position: relative;
+  width: 38px;
+  height: 38px;
   border-radius: 6px;
   overflow: hidden;
   background: #f1f3f8;
   border: 1px solid var(--vi-border);
   flex-shrink: 0;
+}
+
+.thumb-more {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.58);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .task-thumb {
@@ -398,6 +439,7 @@ async function copyError(): Promise<void> {
   .task-thumbs {
     grid-column: 1 / -1;
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   /* ETA + actions become a single row at the bottom of the card */
@@ -424,6 +466,15 @@ async function copyError(): Promise<void> {
   .task-thumb {
     width: 100px;
     height: 64px;
+  }
+
+  .task-input-thumbs {
+    grid-template-columns: repeat(3, 34px);
+  }
+
+  .task-input-thumb {
+    width: 34px;
+    height: 34px;
   }
 }
 </style>

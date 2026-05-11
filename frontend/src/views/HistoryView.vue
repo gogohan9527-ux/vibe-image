@@ -32,6 +32,7 @@ const pageSize = ref(10);
 const total = ref(0);
 const items = ref<TaskItem[]>([]);
 const loading = ref(false);
+const INPUT_THUMB_LIMIT = 4;
 
 const store = useTaskStore();
 
@@ -106,6 +107,24 @@ function narrowQuality(q: string): CreateTaskRequest['quality'] {
   return q === 'low' || q === 'medium' || q === 'high' || q === 'auto' ? q : null;
 }
 
+function inputImageUrls(row: TaskItem): string[] {
+  if (row.input_image_urls?.length) return row.input_image_urls;
+  return row.input_image_url ? [row.input_image_url] : [];
+}
+
+function inputImagePaths(row: TaskItem): string[] | undefined {
+  if (row.input_image_paths?.length) return row.input_image_paths;
+  return row.input_image_path ? [row.input_image_path] : undefined;
+}
+
+function visibleInputImageUrls(row: TaskItem): string[] {
+  return inputImageUrls(row).slice(0, INPUT_THUMB_LIMIT);
+}
+
+function hiddenInputImageCount(row: TaskItem): number {
+  return Math.max(0, inputImageUrls(row).length - INPUT_THUMB_LIMIT);
+}
+
 async function onRegenerate(row: TaskItem): Promise<void> {
   if (!row.provider_id || !row.key_id) {
     ElMessage.warning('该任务为旧版记录（无 provider/key 绑定），请到新建任务抽屉手动重新发起');
@@ -122,6 +141,7 @@ async function onRegenerate(row: TaskItem): Promise<void> {
       quality: narrowQuality(row.quality),
       format: row.format,
       n: 1,
+      input_image_paths: inputImagePaths(row),
     });
     for (const t of res.tasks) store.upsert(t);
     ElMessage.success('已重新生成');
@@ -218,10 +238,22 @@ function isLegacy(row: TaskItem): boolean {
     <!-- Desktop table -->
     <div v-if="!isMobile" class="table-wrap">
       <ElTable :data="items" v-loading="loading" stripe style="width: 100%" row-key="id">
-        <ElTableColumn label="输入图" width="100" align="center">
+        <ElTableColumn label="输入图" width="124" align="center">
           <template #default="{ row }: { row: TaskItem }">
-            <div v-if="row.input_image_url" class="input-thumb">
-              <PreviewImage :src="row.input_image_url" alt="input" />
+            <div v-if="inputImageUrls(row).length > 0" class="input-thumb-list">
+              <div
+                v-for="(url, i) in visibleInputImageUrls(row)"
+                :key="url"
+                class="input-thumb"
+              >
+                <PreviewImage :src="url" alt="input" />
+                <span
+                  v-if="i === visibleInputImageUrls(row).length - 1 && hiddenInputImageCount(row) > 0"
+                  class="thumb-more"
+                >
+                  +{{ hiddenInputImageCount(row) }}
+                </span>
+              </div>
             </div>
             <span v-else class="muted">—</span>
           </template>
@@ -331,8 +363,20 @@ function isLegacy(row: TaskItem): boolean {
       <div v-else class="mobile-list">
         <div v-for="row in items" :key="row.id" class="mobile-card">
           <div class="mc-top">
-            <div v-if="row.input_image_url" class="mc-input-thumb">
-              <PreviewImage :src="row.input_image_url" alt="input" />
+            <div v-if="inputImageUrls(row).length > 0" class="mc-input-thumb-list">
+              <div
+                v-for="(url, i) in visibleInputImageUrls(row)"
+                :key="url"
+                class="mc-input-thumb"
+              >
+                <PreviewImage :src="url" alt="input" />
+                <span
+                  v-if="i === visibleInputImageUrls(row).length - 1 && hiddenInputImageCount(row) > 0"
+                  class="thumb-more"
+                >
+                  +{{ hiddenInputImageCount(row) }}
+                </span>
+              </div>
             </div>
             <div class="mc-thumb">
               <PreviewImage :src="row.image_url" alt="thumbnail" />
@@ -440,14 +484,34 @@ function isLegacy(row: TaskItem): boolean {
   place-items: center;
 }
 
+.input-thumb-list {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-width: 104px;
+  margin: 0 auto;
+}
+
 .input-thumb {
-  width: 72px;
-  height: 72px;
+  position: relative;
+  width: 34px;
+  height: 34px;
   border-radius: 6px;
   overflow: hidden;
   background: #f1f3f8;
   border: 1px solid var(--vi-border);
-  margin: 0 auto;
+}
+
+.thumb-more {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.58);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .muted {
@@ -580,9 +644,19 @@ function isLegacy(row: TaskItem): boolean {
   margin-bottom: 10px;
 }
 
+.mc-input-thumb-list {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  width: 60px;
+  flex-shrink: 0;
+  align-self: center;
+}
+
 .mc-input-thumb {
-  width: 56px;
-  height: 56px;
+  position: relative;
+  width: 26px;
+  height: 26px;
   border-radius: 6px;
   overflow: hidden;
   background: #f1f3f8;

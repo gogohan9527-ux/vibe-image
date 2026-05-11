@@ -374,11 +374,11 @@ backend/app/
 
 frontend/src/
   components/
-    NewTaskDrawer.vue     # 改：加参考图上传 / 预览 / 移除
-    TaskCard.vue          # 改：加输入图缩略图（input_image_url 存在时）
+    NewTaskDrawer.vue     # 改：加参考图多选上传 / 预览 / 移除
+    TaskCard.vue          # 改：加输入图缩略图（input_image_urls 存在时）
 
-images/                   # 既有静态目录
-  temp/                   # 新增子目录；上传图落盘于此；通过 /images/temp/<sha1>.<ext> 暴露
+images/                   # local storage 静态目录
+  temp/                   # local 模式参考图目录；OSS 模式写入 <prefix>temp/<sha1>.<ext>
 ```
 
 无新增前端 store / view。Provider 抽象的扩展不开新文件，落在既有 `providers/base.py` 与 `providers/momo.py`。
@@ -417,7 +417,7 @@ class HttpCall:
     method: str
     headers: dict[str, str] = field(default_factory=dict)
     json_body: Optional[dict] = None
-    files: Optional[dict[str, tuple[str, bytes, str]]] = None  # name → (filename, content, mimetype)
+    files: Optional[dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]] = None
     data: Optional[dict[str, str]] = None                       # multipart 普通字段
 ```
 
@@ -427,10 +427,10 @@ class HttpCall:
 
 ### B.5 上传与存储约定
 
-- `images_dir/temp/` 在启动时确保存在（`config.py` 新增 `images_temp_dir` 属性）。
-- 上传文件名：`<sha1(content)>.<ext>`，扩展名按 sniff 结果（不信用户传的 ext）。
-- 同内容文件不重复落盘（去重）。
-- 任务表 `tasks` 增列 `input_image_path TEXT NULL`（探测式 ALTER，幂等）。旧任务 NULL，前端按缺省处理。
+- local 模式 `images_dir/temp/` 在启动时确保存在；OSS 模式不依赖本地缓存路径。
+- 上传 storage key：`temp/<sha1(content)>.<ext>`，扩展名按 sniff 结果（不信用户传的 ext）。
+- 同内容文件不重复保存（去重），由 active `StorageBackend.exists/save/url` 决定 local 或 OSS 分支。
+- 任务表 `tasks` 保留 `input_image_path TEXT NULL` 兼容旧单图字段，并新增 `input_image_paths TEXT NULL`（JSON 数组，探测式 ALTER，幂等）。启动迁移会把旧 `input_image_path` 回填为 `["..."]`。
 - 上传文件**不**在任务结束时清理；保留以便 TaskCard 历史回看。GC 留作下一工单。
 
 ### B.6 配置增量
@@ -447,21 +447,21 @@ class HttpCall:
 |------|------|
 | `test_providers.py`（既有，新增用例） | momo `build_image_edit_request` 返回 `HttpCall` 形态正确（method=POST，url 末段 `/images/edits`，files 字段含 image，data 字段含 model/prompt/size）；`supports_image_input == True` |
 | `test_uploads.py`（新增） | 上传 PNG 200；非图片 400；超大 413；同内容上传两次返回相同 `input_image_path`；temp 目录被创建 |
-| `test_generator.py`（既有，新增用例） | img2img 分支 mock multipart `requests.post`；input_image_path 透传；不支持 provider 抛 `ProviderCapabilityError` |
-| `test_storage_providers_migration.py`（既有，新增用例） | 旧 db 启动后 `tasks` 表多出 `input_image_path` 列；幂等（重启不重复 ALTER） |
-| `test_tasks_with_provider.py`（既有，新增用例） | 任务带 `input_image_path` 走 img2img 路径；`provider_capability_unsupported` 错误码触发 |
+| `test_generator.py`（既有，新增用例） | img2img 分支 mock multipart `requests.post`；`ReferenceImage` 由 storage-backed bytes/URL 构成；不支持 provider 抛 `ProviderCapabilityError` |
+| `test_storage_providers_migration.py`（既有，新增用例） | 旧 db 启动后 `tasks` 表多出 `input_image_path` / `input_image_paths` 列；旧单图字段回填为 JSON 数组；幂等 |
+| `test_tasks_with_provider.py`（既有，新增用例） | 旧 `input_image_path` 与新 `input_image_paths` 都可走 img2img；冲突返回 `input_image_conflict`；`provider_capability_unsupported` 错误码触发 |
 | `test_providers_api.py`（既有，新增用例） | `GET /api/providers` 响应含 `supports_image_input: true`（momo） |
 
 ### B.8 本轮 contract 流程
 
-1. Backend lane 在 B 序列中段（推荐 B6）写 `docs/interface.draft.md`：列出 `POST /api/uploads/temp`、`POST /api/tasks` 增量字段、`ProviderSummary.supports_image_input`、`TaskItem.input_image_path / input_image_url`、新错误码。
+1. Backend lane 在 B 序列中段（推荐 B6）写 `docs/interface.draft.md`：列出 `POST /api/uploads/temp`、`POST /api/tasks` 参考图字段、`ProviderSummary.supports_image_input`、`TaskItem.input_image_paths / input_image_urls` 及旧字段兼容、新错误码。
 2. Backend lane 显式勾选其 contract 行 → orchestrator 检测 gate（文件存在 + > 500 字节 + 行勾选）→ 启动 Frontend lane。
 3. Frontend lane 读 `docs/interface.draft.md`（本轮唯一 contract 真相源，与 `docs/interface.md` 已有内容并存）。
 4. Phase C 由 orchestrator 把 `interface.draft.md` 合并入 `interface.md`，新端点附 `[v2 — 自 2026-05-09]` 等版本标记；不冲突的 `TaskItem` 字段扩展直接补到既有 §10.5 类型定义里。
 
 ### B.9 安全 / 边界
 
-- `input_image_path` 必须以 `temp/` 开头，且 `(images_dir / input_image_path).resolve()` 必须以 `images_dir.resolve()` 为前缀；否则 `400 input_image_not_found`。
+- 参考图 key 必须以 `temp/` 开头，不能是绝对路径，不能包含 `..` 或反斜杠，并且必须通过 active `StorageBackend.exists(key)`；否则 `400 input_image_not_found`。
 - 上传文件落盘前用 Pillow / `imghdr` 的头校验过一次；MIME 不可信。
 - 错误信息中**不**回显完整文件名给前端（仅返回 sha1 短哈希），避免暴露文件系统细节。
 - 上传接口暂不做速率限制（本期单机工具，留作下个工单）。
@@ -546,7 +546,7 @@ data/
 | **Storage Core Agent**（Upstream） | `backend/app/core/storage_backend.py`（新建）、`backend/app/core/storage_backends/__init__.py`（新建空骨架）、`backend/app/config.py`、`backend/app/config_layers.py`、`backend/app/main.py`、`backend/app/core/generator.py`、`backend/app/core/task_manager.py`、`backend/app/api/uploads.py`、`backend/app/api/history.py`、`backend/app/api/tasks.py`、`backend/tests/test_storage_local.py` 等 Lane 自测、`config/config.example.yaml`（**仅追加 storage 段示例**）、`docs/storage-backend-contract.md`（新建，本轮契约）、`docs/todolist.md`（仅本轮 S 行） | `frontend/**`、`backend/app/core/storage_backends/{aliyun,tencent,aws_like}.py`、`backend/app/scripts/migrate_to_oss.py`、`backend/requirements.txt`、`docs/prd.md`、`docs/explanation.md`、`docs/interface.md`、`docs/todolist.md`（除 S 行外） |
 | **Storage Providers Agent**（Downstream） | `backend/app/core/storage_backends/aliyun.py`、`backend/app/core/storage_backends/tencent.py`、`backend/app/core/storage_backends/aws_like.py`（新建 3 个适配器，AWS / Cloudflare R2 / MinIO 共用 aws_like）、`backend/app/scripts/migrate_to_oss.py`（新建）、`backend/requirements.txt`（**仅追加**新 SDK 行）、`backend/tests/test_storage_aliyun.py` / `test_storage_tencent.py` / `test_storage_aws_like.py` 等 Lane 自测、`config/config.example.yaml`（**仅完善**每家具体字段示例与注释，不动 storage 顶层结构）、`docs/todolist.md`（仅本轮 P 行） | `frontend/**`、Storage Core Agent 的所有可写路径、`docs/prd.md`、`docs/explanation.md`、`docs/interface.md`、`docs/storage-backend-contract.md`（只读契约） |
 
-跨 Lane 修改一律走"上报 → 主对话决定 → 必要时再发一个小 agent run"，不允许互相 monkey-patch。本轮真实运行中触发了一次该流程：Storage Core 报出 `backend/app/schemas.py:TaskItem` 的 `image_url` / `input_image_url` 用 `@computed_field` 硬编码 `/images/` 前缀，跨过了 storage 抽象层；schemas.py 不在任一 lane 的写权限内，主对话以 follow-up 补丁修复（改为普通字段 + 在 `api/tasks.py` / `api/history.py` 中调 `hydrate_task_item_urls()`）。
+跨 Lane 修改一律走"上报 → 主对话决定 → 必要时再发一个小 agent run"，不允许互相 monkey-patch。本轮真实运行中触发了一次该流程：Storage Core 报出 `backend/app/schemas.py:TaskItem` 的 `image_url` / `input_image_url` 用 `@computed_field` 硬编码 `/images/` 前缀，跨过了 storage 抽象层；schemas.py 不在任一 lane 的写权限内，主对话以 follow-up 补丁修复（改为普通字段 + 在 `api/tasks.py` / `api/history.py` 中调 `hydrate_task_item_urls()`）。2026-05-11 多参考图升级后，`input_image_urls` 同样由该 hydrate 层通过 active storage backend 派生。
 
 ### D.2 命名约定
 

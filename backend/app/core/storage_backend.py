@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import json
 from typing import Optional, Protocol, runtime_checkable
 
 from ..config import StorageConfig
@@ -45,6 +46,8 @@ class StorageBackend(Protocol):
         *,
         content_type: Optional[str] = None,
     ) -> None: ...
+
+    def read(self, key: str) -> bytes: ...
 
     def url(self, key: str) -> str: ...
 
@@ -112,6 +115,9 @@ class LocalBackend:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
 
+    def read(self, key: str) -> bytes:
+        return (self._images_dir / key).read_bytes()
+
     def url(self, key: str) -> str:
         # Always forward slashes; ``os.path.join`` would use ``\`` on Windows.
         return f"/images/{key}"
@@ -166,15 +172,43 @@ def build_storage_backend(
 
 
 def hydrate_task_item_urls(item, backend: StorageBackend):
-    """Populate ``item.image_url`` and ``item.input_image_url`` in place.
+    """Populate client-facing URL fields in place.
 
     ``item`` is a ``TaskItem``. We avoid importing ``TaskItem`` here to keep
-    ``storage_backend`` independent of ``schemas``; duck-typing on the two
-    fields is fine because both attributes are plain optional strings.
+    ``storage_backend`` independent of ``schemas``; duck-typing is fine because
+    the touched attributes are plain optional strings / lists.
     """
     item.image_url = to_url(backend, item.image_path)
-    item.input_image_url = to_url(backend, item.input_image_path)
+    paths = _normalise_input_image_paths(
+        getattr(item, "input_image_paths", None),
+        getattr(item, "input_image_path", None),
+    )
+    urls = [u for p in paths if (u := to_url(backend, p))]
+    item.input_image_paths = paths or None
+    item.input_image_urls = urls or None
+    item.input_image_path = paths[0] if paths else None
+    item.input_image_url = urls[0] if urls else None
     return item
+
+
+def _normalise_input_image_paths(
+    paths: Optional[object], legacy_path: Optional[str]
+) -> list[str]:
+    """Return canonical reference-image keys from a DB/API-shaped value."""
+    parsed: list[str] = []
+    if isinstance(paths, str) and paths.strip():
+        try:
+            loaded = json.loads(paths)
+        except json.JSONDecodeError:
+            loaded = None
+        if isinstance(loaded, list):
+            parsed = [p for p in loaded if isinstance(p, str) and p]
+    elif isinstance(paths, list):
+        parsed = [p for p in paths if isinstance(p, str) and p]
+
+    if not parsed and legacy_path:
+        parsed = [legacy_path]
+    return parsed
 
 
 def to_url(backend: StorageBackend, image_path: Optional[str]) -> Optional[str]:

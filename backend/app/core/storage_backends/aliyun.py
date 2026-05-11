@@ -46,6 +46,16 @@ class AliyunOSSBackend:
                 raise StorageError("aliyun", "save", key, exc) from exc
             raise
 
+    def read(self, key: str) -> bytes:
+        full_key = self._prefix + key
+        try:
+            result = self._bucket.get_object(full_key)
+            return result.read()
+        except Exception as exc:  # noqa: BLE001
+            if _is_oss_error(exc):
+                raise StorageError("aliyun", "read", key, exc) from exc
+            raise
+
     def url(self, key: str) -> str:
         full_key = self._prefix + key
         if self._public_base_url:

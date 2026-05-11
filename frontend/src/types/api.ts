@@ -32,6 +32,8 @@ export interface TaskItem {
   // Added 2026-05-09 (II) — img2img. NULL for text-to-image tasks and legacy rows.
   input_image_path?: string | null;
   input_image_url?: string | null;
+  input_image_paths?: string[] | null;
+  input_image_urls?: string[] | null;
 }
 
 export interface PromptItem {
@@ -68,6 +70,8 @@ export interface CreateTaskRequest {
   priority?: boolean;
   // Added 2026-05-09 (II) — img2img reference image; "temp/<sha1>.<ext>" or null/undefined.
   input_image_path?: string | null;
+  // Added 2026-05-11 — canonical multi-reference form.
+  input_image_paths?: string[] | null;
 }
 
 // Rewritten 2026-05-09. Old api_key_configured/base_url fields are gone.

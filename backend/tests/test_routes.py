@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -77,6 +78,23 @@ def _wait_for_status(client: TestClient, task_id: str, target: str, timeout=5.0)
     return None
 
 
+def _install_blocking_runner(client: TestClient) -> threading.Event:
+    blocker = threading.Event()
+
+    def slow_runner(task, config, cancel_event=None, progress_cb=None, metadata_cb=None):
+        blocker.wait(timeout=5)
+        if cancel_event is not None and cancel_event.is_set():
+            from app.errors import CancelledError
+
+            raise CancelledError("cancelled")
+        out = Path(config.images_dir) / f"generated_{task.task_id}.{task.format}"
+        out.write_bytes(b"FAKE")
+        return out
+
+    client.app.state.task_manager._generator_runner = slow_runner
+    return blocker
+
+
 def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
@@ -103,28 +121,36 @@ def test_create_n_creates_multiple(client):
 
 
 def test_cancel_pending_task(client, app_config):
+    blocker = _install_blocking_runner(client)
     # Lower concurrency to 1 to force queueing.
-    client.put("/api/settings", json={"concurrency": 1})
-    # Submit two; the second should be queued.
-    client.post("/api/tasks", json=_task_payload(client, prompt="first"))
-    r2 = client.post("/api/tasks", json=_task_payload(client, prompt="second"))
-    second_id = r2.json()["tasks"][0]["id"]
+    try:
+        client.put("/api/settings", json={"concurrency": 1})
+        # Submit two; the second should be queued.
+        client.post("/api/tasks", json=_task_payload(client, prompt="first"))
+        r2 = client.post("/api/tasks", json=_task_payload(client, prompt="second"))
+        second_id = r2.json()["tasks"][0]["id"]
 
-    # Cancel the second while still pending.
-    cancel = client.delete(f"/api/tasks/{second_id}")
-    assert cancel.status_code == 200
-    assert cancel.json()["status"] == "cancelled"
+        # Cancel the second while still pending.
+        cancel = client.delete(f"/api/tasks/{second_id}")
+        assert cancel.status_code == 200
+        assert cancel.json()["status"] == "cancelled"
+    finally:
+        blocker.set()
 
 
 def test_queue_full_returns_429(client, app_config):
-    client.put("/api/settings", json={"concurrency": 1, "queue_cap": 2})
-    client.post("/api/tasks", json=_task_payload(client, prompt="a"))
-    client.post("/api/tasks", json=_task_payload(client, prompt="b"))
-    r = client.post("/api/tasks", json=_task_payload(client, prompt="c"))
-    assert r.status_code == 429
-    body = r.json()
-    assert body["code"] == "queue_full"
-    assert body["cap"] == 2
+    blocker = _install_blocking_runner(client)
+    try:
+        client.put("/api/settings", json={"concurrency": 1, "queue_cap": 2})
+        client.post("/api/tasks", json=_task_payload(client, prompt="a"))
+        client.post("/api/tasks", json=_task_payload(client, prompt="b"))
+        r = client.post("/api/tasks", json=_task_payload(client, prompt="c"))
+        assert r.status_code == 429
+        body = r.json()
+        assert body["code"] == "queue_full"
+        assert body["cap"] == 2
+    finally:
+        blocker.set()
 
 
 def test_settings_get_and_put(client):

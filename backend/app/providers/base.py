@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 
+MultipartFile = tuple[str, bytes, str]
+MultipartFiles = dict[str, MultipartFile] | list[tuple[str, MultipartFile]]
+
+
 @dataclass
 class CredField:
     """One credential field a Provider asks the user for."""
@@ -49,8 +53,9 @@ class HttpCall:
     method: str  # "GET" | "POST"
     headers: dict[str, str] = field(default_factory=dict)
     json_body: Optional[dict] = None
-    # name -> (filename, content_bytes, mimetype)
-    files: Optional[dict[str, tuple[str, bytes, str]]] = None
+    # name -> (filename, content_bytes, mimetype), or a list of repeated
+    # fields for providers that accept multiple files under the same name.
+    files: Optional[MultipartFiles] = None
     # multipart plain text fields (str values; ints must be stringified)
     data: Optional[dict[str, str]] = None
 

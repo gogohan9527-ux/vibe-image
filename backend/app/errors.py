@@ -189,3 +189,15 @@ class InputImageNotFoundError(VibeError):
             input_image_path=input_image_path,
         )
         self.input_image_path = input_image_path
+
+
+class InputImageConflictError(VibeError):
+    """Both legacy and multi-image request fields were supplied differently."""
+
+    code = "input_image_conflict"
+    http_status = 400
+
+    def __init__(self) -> None:
+        super().__init__(
+            message="input_image_path conflicts with input_image_paths"
+        )

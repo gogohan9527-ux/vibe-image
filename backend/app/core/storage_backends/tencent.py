@@ -55,6 +55,16 @@ class TencentCOSBackend:
                 raise StorageError("tencent", "save", key, exc) from exc
             raise
 
+    def read(self, key: str) -> bytes:
+        full_key = self._prefix + key
+        try:
+            result = self._client.get_object(Bucket=self._bucket, Key=full_key)
+            return result["Body"].get_raw_stream().read()
+        except Exception as exc:  # noqa: BLE001
+            if _is_cos_error(exc):
+                raise StorageError("tencent", "read", key, exc) from exc
+            raise
+
     def url(self, key: str) -> str:
         full_key = self._prefix + key
         if self._public_base_url:
